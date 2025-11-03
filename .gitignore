@@ -1,0 +1,85 @@
+# ===== Custom =====
+
+.venv
+.env
+
+*.json
+
+gcal_auth_oneoff.py
+
+
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*$py.class
+*.so
+
+# ===== Virtual environment =====
+.venv/
+venv/
+env/
+ENV/
+
+# ===== Project configuration and secrets =====
+.env
+.env.*
+*.env
+token.json
+credentials.json
+# Если используешь хранение токена в JSON при отладке — исключаем.
+*.secret
+*.key
+*.pem
+
+# ===== Data & storage =====
+data.json
+*.db
+*.sqlite3
+*.log
+logs/
+*.bak
+
+# ===== IDE / Editor =====
+# VS Code
+.vscode/
+# PyCharm / IntelliJ
+.idea/
+# JetBrains project data
+*.iml
+# macOS Finder / Windows Thumbs
+.DS_Store
+Thumbs.db
+
+# ===== OS / System =====
+*.swp
+*.swo
+*.tmp
+*.temp
+
+# ===== Build / Packaging =====
+build/
+dist/
+*.egg-info/
+.eggs/
+*.manifest
+*.spec
+
+# ===== Uvicorn / systemd / runtime files =====
+uvicorn.log
+journal.log
+nohup.out
+*.pid
+
+# ===== Tests / cache =====
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.cache/
+
+# ===== Optional local scripts =====
+gcal_auth_oneoff.py
+test_*.py
