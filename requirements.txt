@@ -1,7 +1,8 @@
 python-telegram-bot[job-queue]==20.7
 python-dotenv==1.0.1
+fastapi>=0.115
+uvicorn[standard]>=0.30
 tzdata==2024.1
-supabase==2.6.0
 google-api-python-client==2.147.0
 google-auth-httplib2==0.2.0
 google-auth-oauthlib==1.2.1
