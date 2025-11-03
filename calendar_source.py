@@ -62,3 +62,56 @@ def fetch_today_events(tz_name: str) -> List[str]:
         else:
             out.append(f"(весь день) {title}")
     return out
+
+def fetch_events_next_days(tz_name: str, start_offset_days: int, end_offset_days: int) -> List[str]:
+    """
+    События primary-календаря в окне [сегодня+start_offset_days, сегодня+end_offset_days] включительно.
+    Реализовано через полуинтервал [start, end_next), где end_next = (end_day + 1 день).
+    """
+    tz = ZoneInfo(tz_name)
+    now = datetime.now(tz)
+    day0 = datetime(now.year, now.month, now.day, 0, 0, tzinfo=tz)
+
+    start = day0 + timedelta(days=start_offset_days)
+    end_next = day0 + timedelta(days=end_offset_days + 1)
+
+    # ——— ниже повторяем логику выборки из fetch_today_events, но с timeMin/timeMax:
+    creds = _load_credentials()
+    service = build("calendar", "v3", credentials=creds)
+
+    time_min = start.astimezone(ZoneInfo("UTC")).isoformat()
+    time_max = end_next.astimezone(ZoneInfo("UTC")).isoformat()
+
+    events_result = service.events().list(
+        calendarId="primary",
+        timeMin=time_min,
+        timeMax=time_max,
+        singleEvents=True,
+        orderBy="startTime",
+    ).execute()
+
+    items = events_result.get("items", [])
+    out: List[str] = []
+    for e in items:
+        title = e.get("summary", "(без названия)")
+        start_raw = e["start"].get("dateTime") or e["start"].get("date")
+        end_raw = e["end"].get("dateTime") or e["end"].get("date")
+
+        if start_raw and "T" in start_raw:
+            st = datetime.fromisoformat(start_raw.replace("Z", "+00:00")).astimezone(tz)
+            en = datetime.fromisoformat(end_raw.replace("Z", "+00:00")).astimezone(tz)
+            out.append(f"{st:%d.%m} {st:%H:%M}–{en:%H:%M} {title}")
+        else:
+            # событие «на весь день»
+            try:
+                # если дата без времени — просто показываем дату начала (локально)
+                st = datetime.fromisoformat(start_raw) if start_raw else None
+                if st and st.tzinfo is None:
+                    st = st.replace(tzinfo=ZoneInfo("UTC")).astimezone(tz)
+                if st:
+                    out.append(f"{st:%d.%m} (весь день) {title}")
+                else:
+                    out.append(f"(весь день) {title}")
+            except Exception:
+                out.append(f"(весь день) {title}")
+    return out

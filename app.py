@@ -1,15 +1,16 @@
 import os
 import asyncio
+import re
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, ContextTypes, CommandHandler, JobQueue
 
 # время и часовой пояс
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import storage
-from calendar_source import fetch_today_events
+from calendar_source import fetch_today_events, fetch_events_next_days
 
 # 1) Загружаем .env
 load_dotenv()
@@ -26,7 +27,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/testdigest — прислать утренний дайджест сейчас\n"
         "/when - показать, на какое время настроено ежедневное сообщение\n"
         "/settime - изменить время ежедневного сообщения\n"
-        "/addreminder Текст — добавить напоминание\n"
+        "/addreminder Текст DD-MM-YYYY — добавить напоминание\n"
         "/list — показать напоминания\n"
         "/clearreminders — очистить список\n"
     )
@@ -36,29 +37,104 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Тест ок ✅")
 
 # 4) Утренний дайджест
-async def send_morning_digest(context: ContextTypes.DEFAULT_TYPE):
-    now = datetime.now(TZ).strftime("%d.%m.%Y %H:%M")
-    reminders = storage.list_custom_reminders()
-    events = fetch_today_events(TZ_NAME)  # сейчас вернёт []
+def send_morning_digest(context: ContextTypes.DEFAULT_TYPE):
+    now_dt = datetime.now(TZ)
+    now_str = now_dt.strftime("%d.%m.%Y %H:%M")
+    today = now_dt.date()
+    today_iso = today.isoformat()
 
+    # 1) Единый источник напоминаний
+    all_rem = storage.list_custom_reminders()
+
+    undated = [r for r in all_rem if "due" not in r]
+    today_dated = [r for r in all_rem if r.get("due") == today_iso]
+
+    # «В ближайшую неделю»: завтра..+7 дней
+    w_start = today + timedelta(days=1)
+    w_end = today + timedelta(days=7)
+    week = []
+    for r in all_rem:
+        due = r.get("due")
+        if not due:
+            continue
+        try:
+            d = datetime.strptime(due, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if w_start <= d <= w_end:
+            week.append(r)
+    week.sort(key=lambda x: x["due"])
+
+    # «В ближайший месяц»: +8..+31 дней
+    m_start = today + timedelta(days=8)
+    m_end = today + timedelta(days=31)
+    month = []
+    for r in all_rem:
+        due = r.get("due")
+        if not due:
+            continue
+        try:
+            d = datetime.strptime(due, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if m_start <= d <= m_end:
+            month.append(r)
+    month.sort(key=lambda x: x["due"])
+
+    # 2) Календарь
+    events_today = fetch_today_events(TZ_NAME)
+    events_week  = fetch_events_next_days(TZ_NAME, 1, 7)
+    events_month = fetch_events_next_days(TZ_NAME, 8, 31)
+
+    # 3) Формируем текст
     lines = [
         "🌅 Доброе утро!",
-        f"Сейчас: {now}",
+        f"Сейчас: {now_str}",
         "",
-        "🧷 Напоминания:" if reminders else "🧷 Напоминаний пока нет.",
     ]
-    if reminders:
-        lines += [f"• {x}" for x in reminders]
+
+    # Напоминания: без даты + «сегодня»
+    if undated or today_dated:
+        lines.append("🧷 Напоминания:")
+        for x in undated:
+            lines.append(f"• {x['text']}")
+        for it in today_dated:
+            lines.append(f"• {it['text']} (сегодня)")
+    else:
+        lines.append("🧷 Напоминаний пока нет.")
 
     lines.append("")
-    if events:
+
+    # Сегодня в календаре
+    if events_today:
         lines.append("📅 Сегодня в календаре:")
-        lines += [f"• {e}" for e in events]
+        lines += [f"• {e}" for e in events_today]
     else:
         lines.append("📅 Событий в календаре на сегодня не найдено.")
 
+    # В ближайшую неделю
+    if events_week or week:
+        lines.append("")
+        lines.append("⏭️ В ближайшую неделю:")
+        for e in events_week:
+            lines.append(f"• {e}")
+        for it in week:
+            due = it["due"]
+            lines.append(f"• {due[8:10]}.{due[5:7]} {it['text']}")
+
+    # В ближайший месяц
+    if events_month or month:
+        lines.append("")
+        lines.append("📆 В ближайший месяц:")
+        for e in events_month:
+            lines.append(f"• {e}")
+        for it in month:
+            due = it["due"]
+            lines.append(f"• {due[8:10]}.{due[5:7]} {it['text']}")
+
     chat_id = context.job.data["chat_id"]
-    await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
+    context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
+
 
 
 
@@ -135,13 +211,67 @@ async def cmd_start_and_schedule(update: Update, context: ContextTypes.DEFAULT_T
         register_daily_job(context, cid)
 
 # добавление кастомного напоминания
+
+DATE_TAIL_RE = re.compile(r"\b(\d{2}-\d{2}-\d{4})$") # Дата в конце строки, формат DD-MM-YYYY
+
 async def cmd_addreminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = " ".join(context.args).strip()
-    if not text:
-        await update.message.reply_text("Напиши текст: /addreminder Купить воду")
+    """
+    Форматы:
+      /addreminder Текст напоминания
+      /addreminder Текст напоминания DD-MM-YYYY   (дата в конце, опционально)
+    Примеры:
+      /addreminder Проверить почту
+      /addreminder Позвонить маме 07-11-2025
+    """
+    raw = " ".join(context.args).strip() if context.args else ""
+    if not raw:
+        await update.message.reply_text(
+            "Используй:\n"
+            "• /addreminder Текст\n"
+            "• /addreminder Текст DD-MM-YYYY (дата в конце)\n"
+            "Примеры:\n"
+            "• /addreminder Проверить почту\n"
+            "• /addreminder Позвонить маме 07-11-2025"
+        )
         return
-    storage.add_custom_reminder(text)
-    await update.message.reply_text(f"Добавил напоминание {text}! Посмотреть все: /list")
+
+    # Пытаемся вытащить дату ИМЕННО из конца строки
+    m = DATE_TAIL_RE.search(raw)
+    due_iso = None
+    text = raw
+
+    if m:
+        due_ddmmyyyy = m.group(1)  # например "07-11-2025"
+        # Текст = всё до пробела перед датой
+        text = raw[: m.start()].rstrip()
+
+        if not text:
+            await update.message.reply_text(
+                "После даты должен идти текст. Пример: /addreminder Позвонить маме 07-11-2025"
+            )
+            return
+
+        # Валидируем и конвертируем DD-MM-YYYY -> YYYY-MM-DD
+        try:
+            d = datetime.strptime(due_ddmmyyyy, "%d-%m-%Y")
+            due_iso = d.strftime("%Y-%m-%d")
+        except ValueError:
+            await update.message.reply_text(
+                "Дата должна быть в формате DD-MM-YYYY (например, 07-11-2025)."
+            )
+            return
+
+    # Сохраняем (due_iso может быть None — тогда без даты)
+    try:
+        storage.add_custom_reminder(text, due=due_iso)
+    except ValueError as e:
+        await update.message.reply_text(str(e))
+        return
+
+    if due_iso:
+        await update.message.reply_text(f"Добавил напоминание: {text} (на {m.group(1)})")
+    else:
+        await update.message.reply_text(f"Добавил напоминание: {text}")
 
 # просмотр напоминаний
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):

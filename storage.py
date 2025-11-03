@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
-from datetime import time
+from datetime import time, timedelta, datetime
+from typing import Optional, Iterable
 
 DATA_PATH = Path("data.json")
 
@@ -8,6 +9,7 @@ DEFAULT_DATA = {
     "chat_id": None,
     "daily_time": "06:30",   # время по умолчанию
     "custom_reminders": [], 
+
 }
 
 def _ensure_file():
@@ -49,21 +51,75 @@ def set_daily_time(raw: str) -> None:
     _save(data)
 
 # --- custom_reminders ---
-def list_custom_reminders() -> list[str]:
+def list_custom_reminders() -> list[dict]:
+    """
+    Возвращает список напоминаний в виде словарей:
+    [{"text": "Купить хлеб", "due": "2025-11-05"}, {"text": "Позвонить"}]
+    При чтении старого формата (список строк) преобразует их в {"text": str}.
+    """
     data = _load()
-    return data.get("custom_reminders", [])
+    arr = data.get("custom_reminders", [])
+    out = []
 
-def add_custom_reminder(text: str) -> None:
+    # миграция из старого формата (строки → словари)
+    for item in arr:
+        if isinstance(item, str):
+            out.append({"text": item})
+        elif isinstance(item, dict):
+            # проверим корректность структуры
+            text = item.get("text", "").strip()
+            if not text:
+                continue
+            due = item.get("due")
+            if due:
+                try:
+                    datetime.strptime(due, "%d-%m-%Y")
+                    out.append({"text": text, "due": due})
+                except ValueError:
+                    out.append({"text": text})
+            else:
+                out.append({"text": text})
+    return out
+
+
+def add_custom_reminder(text: str, due: str | None = None) -> None:
+    """
+    Добавляет напоминание. Дата due (строка 'DD-MM-YYYY') — необязательная.
+    Если дата указана, проверяет её формат.
+    """
     text = text.strip()
     if not text:
         return
+
+    if due:
+        try:
+            datetime.strptime(due, "%d-%m-%Y")
+        except ValueError:
+            raise ValueError("Дата должна быть в формате DD-MM-YYYY")
+
     data = _load()
     arr = data.get("custom_reminders", [])
-    arr.append(text)
+
+    # при первом запуске в старом формате (строки) — преобразуем
+    normalized = []
+    for item in arr:
+        if isinstance(item, str):
+            normalized.append({"text": item})
+        elif isinstance(item, dict):
+            normalized.append(item)
+    arr = normalized
+
+    new_item = {"text": text}
+    if due:
+        new_item["due"] = due
+    arr.append(new_item)
+
     data["custom_reminders"] = arr
     _save(data)
 
+
 def clear_custom_reminders() -> None:
+    """Полностью очищает список напоминаний."""
     data = _load()
     data["custom_reminders"] = []
     _save(data)
