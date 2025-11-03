@@ -299,12 +299,35 @@ async def cmd_addreminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # просмотр напоминаний
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Показывает все пользовательские напоминания:
+      • без даты — обычные пункты
+      • с датой — выводит дату в формате DD.MM.YYYY
+    """
     items = storage.list_custom_reminders()
     if not items:
         await update.message.reply_text("Пока нет пользовательских напоминаний. Добавление: /addreminder ...")
         return
-    lines = ["Твои напоминания:"]
-    lines += [f"• {x}" for x in items]
+
+    lines = ["📋 Твои пользовательские напоминания:"]
+
+    for it in items:
+        if isinstance(it, dict):
+            text = it.get("text", "").strip()
+            due = it.get("due")
+            if due:
+                try:
+                    d = datetime.strptime(due, "%Y-%m-%d")
+                    date_fmt = d.strftime("%d.%m.%Y")
+                    lines.append(f"• {text} ({date_fmt})")
+                except ValueError:
+                    lines.append(f"• {text} (дата не распознана)")
+            else:
+                lines.append(f"• {text}")
+        else:
+            # поддержка старого формата (строк)
+            lines.append(f"• {str(it)}")
+
     await update.message.reply_text("\n".join(lines))
 
 # очистка списка
