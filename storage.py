@@ -12,9 +12,18 @@ DEFAULT_DATA = {
 
 }
 
+# УТИЛИТЫ
 def _ensure_file():
     if not DATA_PATH.exists():
         DATA_PATH.write_text(json.dumps(DEFAULT_DATA, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def _norm_text(s: str) -> str:
+    """
+    Нормализуем текст для сравнения дублей:
+    • убираем пробелы по краям
+    • приводим к нижнему регистру
+    """
+    return (s or "").strip().lower()
 
 def _load() -> dict:
     _ensure_file()
@@ -99,10 +108,15 @@ def list_custom_reminders() -> list[dict]:
     return out
 
 
+from datetime import datetime  # убедись, что импорт есть сверху
+
+def _norm_text(s: str) -> str:
+    return (s or "").strip().lower()
+
 def add_custom_reminder(text: str, due: str | None = None) -> None:
     """
-    Добавляет напоминание. Дата `due` (строка 'YYYY-MM-DD') — необязательная.
-    Если дата указана, проверяем её формат и сохраняем как ISO.
+    Добавляет напоминание. Дата `due` — ISO 'YYYY-MM-DD' (опционально).
+    Если дата указана, валидируем её и сохраняем как ISO.
     """
     text = (text or "").strip()
     if not text:
@@ -110,7 +124,6 @@ def add_custom_reminder(text: str, due: str | None = None) -> None:
 
     if due:
         try:
-            # Ожидаем ISO
             datetime.strptime(due, "%Y-%m-%d")
         except ValueError:
             raise ValueError("Дата должна быть в формате YYYY-MM-DD")
@@ -119,21 +132,43 @@ def add_custom_reminder(text: str, due: str | None = None) -> None:
     arr = data.get("custom_reminders", [])
 
     # Нормализуем уже хранящиеся записи (строки → dict)
-    normalized = []
+    normalized: list[dict] = []
     for item in arr:
         if isinstance(item, str):
             normalized.append({"text": item})
         elif isinstance(item, dict):
             normalized.append(item)
-    arr = normalized
+    arr = normalized  # дальше работаем только с dict-ами
 
+    # --- Проверка дубля: Тот же нормализованный текст + та же дата (или обе без даты) ---
+    key_text = _norm_text(text)
+    key_due = due  # ISO или None
+
+    for it in arr:
+        if not isinstance(it, dict):
+            continue
+        it_text = _norm_text(it.get("text", ""))
+        it_due = it.get("due")  # ISO или None
+        if it_text == key_text and it_due == key_due:
+            if key_due:
+                # Красиво отформатируем дату для сообщения
+                try:
+                    nice = datetime.strptime(key_due, "%Y-%m-%d").strftime("%d.%m.%Y")
+                except ValueError:
+                    nice = key_due
+                raise ValueError(f"Такое напоминание уже есть: «{text}» ({nice})")
+            else:
+                raise ValueError(f"Такое напоминание уже есть: «{text}»")
+
+    # Если дубля нет — добавляем
     new_item = {"text": text}
     if due:
-        new_item["due"] = due  # уже ISO
+        new_item["due"] = due
     arr.append(new_item)
 
     data["custom_reminders"] = arr
     _save(data)
+
 
 def clear_custom_reminders() -> None:
     """Полностью очищает список напоминаний."""
