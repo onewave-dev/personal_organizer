@@ -158,6 +158,31 @@ async def cmd_clearreminders(update: Update, context: ContextTypes.DEFAULT_TYPE)
     storage.clear_custom_reminders()
     await update.message.reply_text("Список напоминаний очищен.")
 
+# для серверного запуска с webhook / 
+
+def build_telegram_application() -> Application:
+    """
+    Фабрика: создаёт Application со всеми хэндлерами и готовым JobQueue,
+    но ничего НЕ запускает. Используется FastAPI-обвязкой.
+    """
+    if not BOT_TOKEN:
+        raise RuntimeError("BOT_TOKEN отсутствует. Укажите его в .env")
+
+    jq = JobQueue()
+    app = Application.builder().token(BOT_TOKEN).job_queue(jq).build()
+
+    # хэндлеры из твоего main()
+    app.add_handler(CommandHandler("start", cmd_start_and_schedule))
+    app.add_handler(CommandHandler("test", cmd_test))
+    app.add_handler(CommandHandler("testdigest", cmd_testdigest))
+    app.add_handler(CommandHandler("settime", cmd_settime))
+    app.add_handler(CommandHandler("when", cmd_when))
+    app.add_handler(CommandHandler("addreminder", cmd_addreminder))
+    app.add_handler(CommandHandler("list", cmd_list))
+    app.add_handler(CommandHandler("clearreminders", cmd_clearreminders))
+
+    return app
+
 
 # ЗАПУСК БОТА И ХЭНДЛЕРЫ
 def main():
