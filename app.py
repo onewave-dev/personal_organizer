@@ -212,34 +212,22 @@ async def cmd_start_and_schedule(update: Update, context: ContextTypes.DEFAULT_T
 
 ## добавление кастомного напоминания
 
-# Разрешим запятую/пробелы перед датой и хвостовые пробелы после
-DATE_TAIL_RE = re.compile(r"[, \u00A0]*(\d{2}-\d{2}-\d{4})\s*$")
-
-# Маппинг «экзотических» дефисов/тире к обычному '-'
+# Нормализация «экзотических» тире к "-" и NBSP к пробелу
 DASHES = {
-    "\u2010": "-",  # hyphen
-    "\u2011": "-",  # non-breaking hyphen
-    "\u2012": "-",  # figure dash
-    "\u2013": "-",  # en dash
-    "\u2014": "-",  # em dash
-    "\u2015": "-",  # horizontal bar
-    "\u2212": "-",  # minus sign
+    "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2015": "-", "\u2212": "-"
 }
-
-def _normalize_dashes(s: str) -> str:
+def _normalize(s: str) -> str:
     for bad, good in DASHES.items():
-        if bad in s:
-            s = s.replace(bad, good)
-    return s
+        s = s.replace(bad, good)
+    return s.replace("\u00A0", " ").strip()
+
+# Ищем дату в КОНЦЕ сообщения. Разрешаем пробелы/запятые/переводы строк перед ней.
+# Принимаем только DD-MM-YYYY (с любым типом тире, которое нормализуем).
+DATE_TAIL_RE = re.compile(r"[, \t\r\n]*(\d{1,2})[-](\d{1,2})[-](\d{4})\s*$")
 
 async def cmd_addreminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /addreminder Текст
-    /addreminder Текст DD-MM-YYYY   (дата в конце, опционально)
-    Допускаются запятая/пробел перед датой; «длинные» тире нормализуются.
-    """
     raw = " ".join(context.args) if context.args else ""
-    raw = raw.strip()
+    raw = _normalize(raw)
     if not raw:
         await update.message.reply_text(
             "Используй:\n"
@@ -251,31 +239,26 @@ async def cmd_addreminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Нормализуем «экзотические» дефисы/тире и NBSP
-    raw_norm = _normalize_dashes(raw).replace("\u00A0", " ").strip()
-
-    m = DATE_TAIL_RE.search(raw_norm)
+    m = DATE_TAIL_RE.search(raw)
     due_iso = None
-    text = raw_norm
+    text = raw
 
     if m:
-        due_ddmmyyyy = m.group(1)  # например, "09-11-2025"
-        # Текст — всё до начала матча, обрежем запятые/пробелы на конце
-        text = raw_norm[: m.start()].rstrip(" ,\u00A0")
-
+        d_str, m_str, y_str = m.group(1), m.group(2), m.group(3)
+        # Текст — всё до даты, подчистим хвостовые запятую/пробелы/переводы строк
+        text = raw[: m.start()].rstrip(" ,\t\r\n")
         if not text:
             await update.message.reply_text("Добавь текст напоминания перед датой 🙂")
             return
-
-        # Валидируем и конвертируем DD-MM-YYYY → YYYY-MM-DD
+        # Валидируем вручную, чтобы увидеть точную причину, если что-то не так
         try:
-            d = datetime.strptime(due_ddmmyyyy, "%d-%m-%Y")
-            due_iso = d.strftime("%Y-%m-%d")
-        except ValueError:
+            d_i, m_i, y_i = int(d_str), int(m_str), int(y_str)
+            dt = datetime(y_i, m_i, d_i)
+            due_iso = dt.strftime("%Y-%m-%d")
+        except Exception:
             await update.message.reply_text("Дата должна быть в формате DD-MM-YYYY (например, 07-11-2025).")
             return
 
-    # Сохранение
     try:
         storage.add_custom_reminder(text, due=due_iso)  # due_iso может быть None
     except ValueError as e:
@@ -283,8 +266,7 @@ async def cmd_addreminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if due_iso:
-        # Показываем пользователю дату в том же формате, что он ввёл
-        await update.message.reply_text(f"Добавил напоминание: {text} (на {m.group(1)})")
+        await update.message.reply_text(f"Добавил напоминание: {text} (на {d_str.zfill(2)}-{m_str.zfill(2)}-{y_str})")
     else:
         await update.message.reply_text(f"Добавил напоминание: {text}")
 
