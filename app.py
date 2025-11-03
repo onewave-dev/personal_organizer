@@ -37,7 +37,7 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Тест ок ✅")
 
 # 4) Утренний дайджест
-def send_morning_digest(context: ContextTypes.DEFAULT_TYPE):
+async def send_morning_digest(context: ContextTypes.DEFAULT_TYPE):
     now_dt = datetime.now(TZ)
     now_str = now_dt.strftime("%d.%m.%Y %H:%M")
     today = now_dt.date()
@@ -133,7 +133,7 @@ def send_morning_digest(context: ContextTypes.DEFAULT_TYPE):
             lines.append(f"• {due[8:10]}.{due[5:7]} {it['text']}")
 
     chat_id = context.job.data["chat_id"]
-    context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
+    await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
 
 
 
