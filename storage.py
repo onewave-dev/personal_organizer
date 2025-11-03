@@ -53,54 +53,72 @@ def set_daily_time(raw: str) -> None:
 # --- custom_reminders ---
 def list_custom_reminders() -> list[dict]:
     """
-    Возвращает список напоминаний в виде словарей:
-    [{"text": "Купить хлеб", "due": "2025-11-05"}, {"text": "Позвонить"}]
-    При чтении старого формата (список строк) преобразует их в {"text": str}.
+    Возвращает список напоминаний как словари:
+      {"text": "..."} или {"text": "...", "due": "YYYY-MM-DD"}
+    Мигрируем старый формат DD-MM-YYYY → YYYY-MM-DD на лету.
     """
     data = _load()
     arr = data.get("custom_reminders", [])
-    out = []
+    out: list[dict] = []
 
-    # миграция из старого формата (строки → словари)
     for item in arr:
         if isinstance(item, str):
             out.append({"text": item})
-        elif isinstance(item, dict):
-            # проверим корректность структуры
-            text = item.get("text", "").strip()
-            if not text:
-                continue
-            due = item.get("due")
-            if due:
-                try:
-                    datetime.strptime(due, "%d-%m-%Y")
-                    out.append({"text": text, "due": due})
-                except ValueError:
-                    out.append({"text": text})
-            else:
-                out.append({"text": text})
+            continue
+
+        if not isinstance(item, dict):
+            continue
+
+        text = (item.get("text") or "").strip()
+        if not text:
+            continue
+
+        due = item.get("due")
+        if not due:
+            out.append({"text": text})
+            continue
+
+        # Пытаемся распознать due:
+        # 1) ISO (YYYY-MM-DD)
+        try:
+            datetime.strptime(due, "%Y-%m-%d")
+            out.append({"text": text, "due": due})
+            continue
+        except ValueError:
+            pass
+
+        # 2) Старый формат DD-MM-YYYY → конвертируем в ISO
+        try:
+            d = datetime.strptime(due, "%d-%m-%Y")
+            out.append({"text": text, "due": d.strftime("%Y-%m-%d")})
+            continue
+        except ValueError:
+            # если дата битая — вернём без даты
+            out.append({"text": text})
+
     return out
 
 
 def add_custom_reminder(text: str, due: str | None = None) -> None:
     """
-    Добавляет напоминание. Дата due (строка 'DD-MM-YYYY') — необязательная.
-    Если дата указана, проверяет её формат.
+    Добавляет напоминание. Дата `due` (строка 'YYYY-MM-DD') — необязательная.
+    Если дата указана, проверяем её формат и сохраняем как ISO.
     """
-    text = text.strip()
+    text = (text or "").strip()
     if not text:
         return
 
     if due:
         try:
-            datetime.strptime(due, "%d-%m-%Y")
+            # Ожидаем ISO
+            datetime.strptime(due, "%Y-%m-%d")
         except ValueError:
-            raise ValueError("Дата должна быть в формате DD-MM-YYYY")
+            raise ValueError("Дата должна быть в формате YYYY-MM-DD")
 
     data = _load()
     arr = data.get("custom_reminders", [])
 
-    # при первом запуске в старом формате (строки) — преобразуем
+    # Нормализуем уже хранящиеся записи (строки → dict)
     normalized = []
     for item in arr:
         if isinstance(item, str):
@@ -111,12 +129,11 @@ def add_custom_reminder(text: str, due: str | None = None) -> None:
 
     new_item = {"text": text}
     if due:
-        new_item["due"] = due
+        new_item["due"] = due  # уже ISO
     arr.append(new_item)
 
     data["custom_reminders"] = arr
     _save(data)
-
 
 def clear_custom_reminders() -> None:
     """Полностью очищает список напоминаний."""
