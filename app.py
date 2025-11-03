@@ -236,17 +236,12 @@ def _normalize_all(s: str) -> str:
 DATE_TAIL_RE = re.compile(r"[, \t\r\n]*(\d{1,2})\D(\d{1,2})\D(\d{4})\s*$")
 
 async def cmd_addreminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(repr(context.args)) #TEMP
     """
     /addreminder Текст
-    /addreminder Текст DD-MM-YYYY  (дата в конце, опционально; допустимы любые нецифровые разделители)
-    Примеры:
-      /addreminder Проверить почту
-      /addreminder Позвонить маме 07-11-2025
-      /addreminder Позвонить маме 07–11–2025   ← с длинным тире тоже сработает
+    /addreminder Текст DD-MM-YYYY   (дата в конце, опционально; допускаются длинные тире)
     """
-    raw = " ".join(context.args) if context.args else ""
-    raw = _normalize_all(raw)
-    if not raw:
+    if not context.args:
         await update.message.reply_text(
             "Используй:\n"
             "• /addreminder Текст\n"
@@ -257,35 +252,43 @@ async def cmd_addreminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    m = DATE_TAIL_RE.search(raw)
+    # Нормализуем все аргументы
+    args_norm = [_normalize_all(a) for a in context.args if _normalize_all(a)]
+    if not args_norm:
+        await update.message.reply_text("Текст напоминания пуст.")
+        return
+
+    # Кандидат на дату — последний аргумент
+    candidate = args_norm[-1]
+
+    # Разрешаем любые нецифровые разделители между DD, MM, YYYY
+    m = re.fullmatch(r"(\d{1,2})\D(\d{1,2})\D(\d{4})", candidate)
     due_iso = None
-    text = raw
 
     if m:
         d_str, m_str, y_str = m.group(1), m.group(2), m.group(3)
-        # текст до даты (срежем хвостовые запятые/пробелы/переносы)
-        text = raw[: m.start()].rstrip(" ,\t\r\n")
-        if not text:
-            await update.message.reply_text("Добавь текст напоминания перед датой 🙂")
-            return
-        # строгая валидация календаря
         try:
             d_i, m_i, y_i = int(d_str), int(m_str), int(y_str)
-            dt = datetime(y_i, m_i, d_i)
+            dt = datetime(y_i, m_i, d_i)  # строгая проверка реальной даты
             due_iso = dt.strftime("%Y-%m-%d")
+            text = " ".join(args_norm[:-1]).rstrip(" ,\t\r\n")
+            if not text:
+                await update.message.reply_text("Добавь текст напоминания перед датой 🙂")
+                return
         except Exception:
             await update.message.reply_text("Дата должна быть в формате DD-MM-YYYY (например, 07-11-2025).")
             return
+    else:
+        # Даты нет — всё это текст
+        text = " ".join(args_norm).strip()
 
     try:
         storage.add_custom_reminder(text, due=due_iso)
     except ValueError as e:
-        # (на случай внутренней валидации стораджа)
         await update.message.reply_text(str(e))
         return
 
     if due_iso:
-        # показываем пользователю привычный формат
         await update.message.reply_text(f"Добавил напоминание: {text} (на {d_str.zfill(2)}-{m_str.zfill(2)}-{y_str})")
     else:
         await update.message.reply_text(f"Добавил напоминание: {text}")
