@@ -236,11 +236,13 @@ def _normalize_all(s: str) -> str:
 DATE_TAIL_RE = re.compile(r"[, \t\r\n]*(\d{1,2})\D(\d{1,2})\D(\d{4})\s*$")
 
 async def cmd_addreminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(repr(context.args)) #TEMP
     """
     /addreminder Текст
-    /addreminder Текст DD-MM-YYYY   (дата в конце, опционально; допускаются длинные тире)
+    /addreminder Текст DD-MM-YYYY  (дата в конце; допускаются любые разделители между цифрами)
     """
+    # DIAG (можно убрать позже)
+    await update.message.reply_text(repr(context.args))
+
     if not context.args:
         await update.message.reply_text(
             "Используй:\n"
@@ -252,35 +254,36 @@ async def cmd_addreminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Нормализуем все аргументы
+    # Нормализуем аргументы (цифры/тире/NBSP и пр.)
     args_norm = [_normalize_all(a) for a in context.args if _normalize_all(a)]
     if not args_norm:
         await update.message.reply_text("Текст напоминания пуст.")
         return
 
-    # Кандидат на дату — последний аргумент
-    candidate = args_norm[-1]
+    candidate = args_norm[-1]           # последний токен — возможная дата
+    parts = re.split(r"\D+", candidate) # режем по любой не-цифре
 
-    # Разрешаем любые нецифровые разделители между DD, MM, YYYY
-    m = re.fullmatch(r"(\d{1,2})\D(\d{1,2})\D(\d{4})", candidate)
     due_iso = None
+    text = " ".join(args_norm).strip()  # по умолчанию — весь текст
 
-    if m:
-        d_str, m_str, y_str = m.group(1), m.group(2), m.group(3)
+    if len(parts) == 3 and all(p.isdigit() for p in parts):
+        d_str, m_str, y_str = parts[0], parts[1], parts[2]
         try:
             d_i, m_i, y_i = int(d_str), int(m_str), int(y_str)
-            dt = datetime(y_i, m_i, d_i)  # строгая проверка реальной даты
-            due_iso = dt.strftime("%Y-%m-%d")
-            text = " ".join(args_norm[:-1]).rstrip(" ,\t\r\n")
-            if not text:
-                await update.message.reply_text("Добавь текст напоминания перед датой 🙂")
-                return
+            # быстрая предвалидация диапазонов
+            if 1 <= d_i <= 31 and 1 <= m_i <= 12 and 1900 <= y_i <= 9999:
+                dt = datetime(y_i, m_i, d_i)    # строгая проверка календаря
+                due_iso = dt.strftime("%Y-%m-%d")
+                # текст — всё до последнего токена
+                text = " ".join(args_norm[:-1]).rstrip(" ,\t\r\n")
         except Exception:
-            await update.message.reply_text("Дата должна быть в формате DD-MM-YYYY (например, 07-11-2025).")
-            return
-    else:
-        # Даты нет — всё это текст
-        text = " ".join(args_norm).strip()
+            # если вдруг не распарсили — трактуем как "без даты"
+            due_iso = None
+            text = " ".join(args_norm).strip()
+
+    if not text:
+        await update.message.reply_text("Добавь текст напоминания перед датой 🙂")
+        return
 
     try:
         storage.add_custom_reminder(text, due=due_iso)
@@ -289,9 +292,13 @@ async def cmd_addreminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if due_iso:
-        await update.message.reply_text(f"Добавил напоминание: {text} (на {d_str.zfill(2)}-{m_str.zfill(2)}-{y_str})")
+        # приведём день/месяц к 2 цифрам в ответе
+        await update.message.reply_text(
+            f"Добавил напоминание: {text} (на {d_str.zfill(2)}-{m_str.zfill(2)}-{y_str})"
+        )
     else:
         await update.message.reply_text(f"Добавил напоминание: {text}")
+
 
 # просмотр напоминаний
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
