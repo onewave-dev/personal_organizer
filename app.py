@@ -1,6 +1,7 @@
 import os
 import asyncio
 import re
+import unicodedata
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, ContextTypes, CommandHandler, JobQueue
@@ -212,22 +213,39 @@ async def cmd_start_and_schedule(update: Update, context: ContextTypes.DEFAULT_T
 
 ## добавление кастомного напоминания
 
-# Нормализация «экзотических» тире к "-" и NBSP к пробелу
-DASHES = {
-    "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2015": "-", "\u2212": "-"
-}
-def _normalize(s: str) -> str:
-    for bad, good in DASHES.items():
-        s = s.replace(bad, good)
-    return s.replace("\u00A0", " ").strip()
+# ── Нормализация: приводим «экзотические» тире и цифры к ASCII, NBSP → пробел
+_DASHES = dict.fromkeys(map(ord, "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"), ord("-"))
+# Арабско-индоцифры → ASCII
+_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩٠۱۲۳۴۵۶۷۸۹", "01234567890123456789")
 
-# Ищем дату в КОНЦЕ сообщения. Разрешаем пробелы/запятые/переводы строк перед ней.
-# Принимаем только DD-MM-YYYY (с любым типом тире, которое нормализуем).
-DATE_TAIL_RE = re.compile(r"[, \t\r\n]*(\d{1,2})[-](\d{1,2})[-](\d{4})\s*$")
+def _normalize_all(s: str) -> str:
+    if not s:
+        return ""
+    # NFKC часто лечит странные формы символов
+    s = unicodedata.normalize("NFKC", s)
+    # цифры → ASCII
+    s = s.translate(_DIGITS)
+    # тире → '-'
+    s = s.translate(_DASHES)
+    # NBSP → обычный пробел
+    s = s.replace("\u00A0", " ")
+    # уберём двойные пробелы по краям
+    return s.strip()
+
+# ── Дата в КОНЦЕ: берём DD<нецифра>MM<нецифра>YYYY, перед ней могут быть пробелы/запятые/переносы
+DATE_TAIL_RE = re.compile(r"[, \t\r\n]*(\d{1,2})\D(\d{1,2})\D(\d{4})\s*$")
 
 async def cmd_addreminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /addreminder Текст
+    /addreminder Текст DD-MM-YYYY  (дата в конце, опционально; допустимы любые нецифровые разделители)
+    Примеры:
+      /addreminder Проверить почту
+      /addreminder Позвонить маме 07-11-2025
+      /addreminder Позвонить маме 07–11–2025   ← с длинным тире тоже сработает
+    """
     raw = " ".join(context.args) if context.args else ""
-    raw = _normalize(raw)
+    raw = _normalize_all(raw)
     if not raw:
         await update.message.reply_text(
             "Используй:\n"
@@ -245,12 +263,12 @@ async def cmd_addreminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if m:
         d_str, m_str, y_str = m.group(1), m.group(2), m.group(3)
-        # Текст — всё до даты, подчистим хвостовые запятую/пробелы/переводы строк
+        # текст до даты (срежем хвостовые запятые/пробелы/переносы)
         text = raw[: m.start()].rstrip(" ,\t\r\n")
         if not text:
             await update.message.reply_text("Добавь текст напоминания перед датой 🙂")
             return
-        # Валидируем вручную, чтобы увидеть точную причину, если что-то не так
+        # строгая валидация календаря
         try:
             d_i, m_i, y_i = int(d_str), int(m_str), int(y_str)
             dt = datetime(y_i, m_i, d_i)
@@ -260,12 +278,14 @@ async def cmd_addreminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     try:
-        storage.add_custom_reminder(text, due=due_iso)  # due_iso может быть None
+        storage.add_custom_reminder(text, due=due_iso)
     except ValueError as e:
+        # (на случай внутренней валидации стораджа)
         await update.message.reply_text(str(e))
         return
 
     if due_iso:
+        # показываем пользователю привычный формат
         await update.message.reply_text(f"Добавил напоминание: {text} (на {d_str.zfill(2)}-{m_str.zfill(2)}-{y_str})")
     else:
         await update.message.reply_text(f"Добавил напоминание: {text}")
