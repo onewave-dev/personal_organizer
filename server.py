@@ -35,6 +35,11 @@ async def _on_shutdown():
 async def healthz():
     return {"ok": True}
 
+@fastapi_app.head("/healthz")
+async def healthz_head():
+    # Просто вернуть 200 без тела
+    return {}
+
 @fastapi_app.get("/set_webhook")
 async def set_webhook():
     if not EXPOSE_SET_WEBHOOK:
