@@ -4,11 +4,10 @@ import re
 import unicodedata
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, ContextTypes, CommandHandler, JobQueue, CallbackQueryHandler
-from datetime import time as _t, datetime as _dt, timedelta as _td
+from telegram.ext import Application, ContextTypes, CommandHandler, JobQueue, CallbackQueryHandler, MessageHandler, filters
 
 # время и часовой пояс
-from datetime import datetime, time, timedelta
+from datetime import time as _t, datetime as _dt, timedelta as _td
 from zoneinfo import ZoneInfo
 
 import storage
@@ -40,14 +39,19 @@ def build_main_menu(user_id: int | None) -> InlineKeyboardMarkup:
 def build_settings_menu(user_id: int | None) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton("⏰ Время дайджеста", callback_data="settings:settime")],
-        [InlineKeyboardButton("🕒 Показать время",  callback_data="settings:when")],
     ]
     if is_admin(user_id):
         rows.append([InlineKeyboardButton("[адм.]", callback_data="settings:admin")])
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="menu:root")])
     return InlineKeyboardMarkup(rows)
 
-# --- ФУНКЦИИ НАСТРОЙКИ ВРЕМЕНИ ---
+def build_reminders_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 Показать список", callback_data="rem:list")],
+        [InlineKeyboardButton("➕ Добавить",        callback_data="rem:add:start")],
+        [InlineKeyboardButton("🧹 Очистить",       callback_data="rem:clear")],
+        [InlineKeyboardButton("⬅️ Назад",          callback_data="menu:root")],
+    ])
 
 def build_time_menu(current_time_str: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -57,6 +61,10 @@ def build_time_menu(current_time_str: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("⬅️ Назад", callback_data="menu:settings")],
     ])
 
+
+# --- ФУНКЦИИ НАСТРОЙКИ ВРЕМЕНИ ---
+
+
 def _fmt_time(t: _t) -> str:
     return f"{t.hour:02d}:{t.minute:02d}"
 
@@ -64,7 +72,6 @@ def _shift_time(t: _t, minutes: int) -> _t:
     base = _dt(2000, 1, 1, t.hour, t.minute)
     shifted = base + _td(minutes=minutes)
     return _t(shifted.hour, shifted.minute)
-
 
 
 # 2) /start — приветствие и проверка, что бот «живой»
@@ -98,6 +105,14 @@ async def send_morning_digest(context: ContextTypes.DEFAULT_TYPE):
 
     undated = [r for r in all_rem if "due" not in r]
     today_dated = [r for r in all_rem if r.get("due") == today_iso]
+    # Нормализуем: строки → {"text": "..."} для совместимости со старым форматом
+    norm = []
+    for it in all_rem:
+        if isinstance(it, dict):
+            norm.append(it)
+        else:
+            norm.append({"text": str(it)})
+    all_rem = norm
 
     # «В ближайшую неделю»: завтра..+7 дней
     w_start = today + timedelta(days=1)
@@ -234,8 +249,8 @@ def register_daily_job(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
         job.schedule_removal()
 
     # забираем время из стораджа (например, 07:45) и добавляем tzinfo
-    base_t = storage.get_daily_time()  # datetime.time(hour, minute) БЕЗ tzinfo
-    t_with_tz = time(base_t.hour, base_t.minute, tzinfo=TZ)
+    base_t = storage.get_daily_time()
+    t_with_tz = _t(base_t.hour, base_t.minute, tzinfo=TZ)
 
     jq.run_daily(
         callback=send_morning_digest,
@@ -355,7 +370,7 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     items = storage.list_custom_reminders()
     if not items:
-        await update.message.reply_text("Пока нет пользовательских напоминаний. Добавление: /addreminder ...")
+        await update.message.reply_text("Пока нет пользовательских напоминаний.")
         return
 
     lines = ["📋 Твои пользовательские напоминания:"]
@@ -384,7 +399,16 @@ async def cmd_clearreminders(update: Update, context: ContextTypes.DEFAULT_TYPE)
     storage.clear_custom_reminders()
     await update.message.reply_text("Список напоминаний очищен.")
 
-# Обработка кнопок времени
+# Обработка кнопок 
+
+async def on_main_menu(query, context: ContextTypes.DEFAULT_TYPE):
+    uid = query.from_user.id if query.from_user else None
+    await query.edit_message_text("Главное меню:", reply_markup=build_main_menu(uid))
+
+async def on_settings_menu(query, context: ContextTypes.DEFAULT_TYPE):
+    uid = query.from_user.id if query.from_user else None
+    await query.edit_message_text("⚙️ Настройки:", reply_markup=build_settings_menu(uid))
+
 
 async def on_settings_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -420,6 +444,127 @@ async def on_settings_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return
 
+    if data == "settings:admin":
+        if not is_admin(uid):
+            await query.answer("Недостаточно прав", show_alert=True)
+            return
+        await query.answer()
+        await query.edit_message_text(
+            "🔒 Админ-меню\n\n"
+            "Тестовые команды:\n"
+            "• /test — проверить, что бот жив\n"
+            "• /testdigest — прислать утренний дайджест сейчас\n",
+            reply_markup=build_settings_menu(uid),
+        )
+        return
+
+async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data or ""
+
+    if data == "menu:root":
+        return await on_main_menu(query, context)
+    
+    if data == "menu:reminders":
+        await query.answer()
+        return await query.edit_message_text(
+            "🧷 Раздел «Напоминания»",
+            reply_markup=build_reminders_menu()
+        )
+
+    if data == "menu:settings":
+        return await on_settings_menu(query, context)
+    
+    # Маршрутизация всех кликов настроек в on_settings_action
+    if data.startswith("settings:"):
+        return await on_settings_action(update, context)
+
+    # Ветвь напоминаний
+    if data == "rem:list":
+        await query.answer()
+        items = storage.list_custom_reminders()
+        if not items:
+            text = "Пока нет пользовательских напоминаний."
+        else:
+            lines = ["📋 Твои пользовательские напоминания:"]
+            for it in items:
+                if isinstance(it, dict):
+                    txt = (it.get("text") or "").strip()
+                    due = it.get("due")
+                    if due:
+                        try:
+                            d = _dt.strptime(due, "%Y-%m-%d").strftime("%d.%m.%Y")
+                            lines.append(f"• {txt} ({d})")
+                        except Exception:
+                            lines.append(f"• {txt} (дата не распознана)")
+                    else:
+                        lines.append(f"• {txt}")
+                else:
+                    lines.append(f"• {str(it)}")
+            text = "\n".join(lines)
+
+        return await query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад", callback_data="menu:reminders")]
+            ])
+        )
+    if data == "rem:add:start":
+        await query.answer()
+        context.user_data["awaiting_reminder"] = True
+        return await query.edit_message_text(
+            "Отправь одно сообщение с напоминанием:\n"
+            "• Просто текст\n"
+            "• Или: Текст DD-MM-YYYY (например, 07-11-2025)\n\n"
+            "После отправки вернёшься в меню.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Отмена", callback_data="menu:reminders")]
+            ])
+        )
+
+    if data == "rem:clear":
+        await query.answer()
+        storage.clear_custom_reminders()
+        return await query.edit_message_text(
+            "Список напоминаний очищен.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад", callback_data="menu:reminders")]
+            ])
+        )
+
+async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("awaiting_reminder"):
+        return
+
+    text = (update.effective_message.text or "").strip()
+    if not text:
+        await update.effective_message.reply_text("Пустое сообщение. Отправь текст напоминания.")
+        return
+
+    import re
+    from datetime import datetime as _dt
+    m = re.search(r"(.*)\s(\d{2}-\d{2}-\d{4})$", text)
+    if m:
+        body = m.group(1).strip()
+        ddmmyyyy = m.group(2)
+        try:
+            iso = _dt.strptime(ddmmyyyy, "%d-%m-%Y").strftime("%Y-%m-%d")
+        except ValueError:
+            await update.effective_message.reply_text("Дата должна быть в формате DD-MM-YYYY.")
+            return
+        storage.add_custom_reminder(body, iso)
+    else:
+        storage.add_custom_reminder(text)
+
+    context.user_data["awaiting_reminder"] = False
+    await update.effective_message.reply_text(
+        "✅ Напоминание добавлено.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ В раздел «Напоминания»", callback_data="menu:reminders")]
+        ])
+    )
+
+
 # для серверного запуска с webhook из server.py
 
 def build_telegram_application() -> Application:
@@ -437,13 +582,15 @@ def build_telegram_application() -> Application:
     app.add_handler(CommandHandler("start", cmd_start_and_schedule))
     app.add_handler(CommandHandler("test", cmd_test))
     app.add_handler(CommandHandler("testdigest", cmd_testdigest))
-    app.add_handler(CommandHandler("settime", cmd_settime))
-    app.add_handler(CommandHandler("when", cmd_when))
     app.add_handler(CommandHandler("addreminder", cmd_addreminder))
     app.add_handler(CommandHandler("list", cmd_list))
     app.add_handler(CommandHandler("clearreminders", cmd_clearreminders))
 
+    app.add_handler(CallbackQueryHandler(on_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text_message))
+
     return app
+
 
 
 # ЗАПУСК БОТА И ХЭНДЛЕРЫ - ЛОКАЛЬНО
@@ -458,11 +605,12 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start_and_schedule))
     app.add_handler(CommandHandler("test", cmd_test))
     app.add_handler(CommandHandler("testdigest", cmd_testdigest))
-    app.add_handler(CommandHandler("settime", cmd_settime))
-    app.add_handler(CommandHandler("when", cmd_when))
     app.add_handler(CommandHandler("addreminder", cmd_addreminder))
     app.add_handler(CommandHandler("list", cmd_list))
     app.add_handler(CommandHandler("clearreminders", cmd_clearreminders))
+
+    app.add_handler(CallbackQueryHandler(on_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text_message))
 
 
     # 5) Запускаем long polling
