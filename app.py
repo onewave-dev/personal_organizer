@@ -3,8 +3,9 @@ import asyncio
 import re
 import unicodedata
 from dotenv import load_dotenv
-from telegram import Update
-from telegram.ext import Application, ContextTypes, CommandHandler, JobQueue
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, ContextTypes, CommandHandler, JobQueue, CallbackQueryHandler
+from datetime import time as _t, datetime as _dt, timedelta as _td
 
 # время и часовой пояс
 from datetime import datetime, time, timedelta
@@ -18,22 +19,70 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 TZ_NAME  = os.getenv("TZ", "Europe/Belgrade")
 TZ = ZoneInfo(TZ_NAME)
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+
+#1.1) проверка user id
+def is_admin(user_id: int | None) -> bool:
+    try:
+        return user_id is not None and int(user_id) == ADMIN_ID
+    except Exception:
+        return False
+
+# --- КЛАВИАТУРЫ ---
+
+def build_main_menu(user_id: int | None) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton("🧷 Напоминания", callback_data="menu:reminders"),
+         InlineKeyboardButton("⚙️ Настройки",   callback_data="menu:settings")],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+def build_settings_menu(user_id: int | None) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton("⏰ Время дайджеста", callback_data="settings:settime")],
+        [InlineKeyboardButton("🕒 Показать время",  callback_data="settings:when")],
+    ]
+    if is_admin(user_id):
+        rows.append([InlineKeyboardButton("[адм.]", callback_data="settings:admin")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="menu:root")])
+    return InlineKeyboardMarkup(rows)
+
+# --- ФУНКЦИИ НАСТРОЙКИ ВРЕМЕНИ ---
+
+def build_time_menu(current_time_str: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("−10 мин", callback_data="settings:time:-10"),
+         InlineKeyboardButton("+10 мин", callback_data="settings:time:+10")],
+        [InlineKeyboardButton("✅ Сохранить", callback_data="settings:time:save")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="menu:settings")],
+    ])
+
+def _fmt_time(t: _t) -> str:
+    return f"{t.hour:02d}:{t.minute:02d}"
+
+def _shift_time(t: _t, minutes: int) -> _t:
+    base = _dt(2000, 1, 1, t.hour, t.minute)
+    shifted = base + _td(minutes=minutes)
+    return _t(shifted.hour, shifted.minute)
+
 
 
 # 2) /start — приветствие и проверка, что бот «живой»
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id if update.effective_user else None
     await update.message.reply_text(
-        "Привет! Я — твой личный органайзер-бот. Команды:\n"
-        "/test — проверить, что я работаю\n"
-        "/testdigest — прислать утренний дайджест сейчас\n"
-        "/when - показать, на какое время настроено ежедневное сообщение\n"
-        "/settime - изменить время ежедневного сообщения\n"
-        "/addreminder Текст DD-MM-YYYY — добавить напоминание\n"
-        "/list — показать напоминания\n"
-        "/clearreminders — очистить список\n"
+        "Главное меню:",
+#         "Привет! Я — твой личный органайзер-бот. Команды:\n"
+#         "/test — проверить, что я работаю\n"
+#         "/testdigest — прислать утренний дайджест сейчас\n"
+#         "/when - показать, на какое время настроено ежедневное сообщение\n"
+#         "/settime - изменить время ежедневного сообщения\n"
+#         "/addreminder Текст DD-MM-YYYY — добавить напоминание\n"
+#         "/list — показать напоминания\n"
+#         "/clearreminders — очистить список\n"
+        reply_markup=build_main_menu(uid),
     )
 
-# 3) /test — простая проверка
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Тест ок ✅")
 
@@ -335,7 +384,43 @@ async def cmd_clearreminders(update: Update, context: ContextTypes.DEFAULT_TYPE)
     storage.clear_custom_reminders()
     await update.message.reply_text("Список напоминаний очищен.")
 
-# для серверного запуска с webhook / 
+# Обработка кнопок времени
+
+async def on_settings_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+    uid = query.from_user.id if query.from_user else None
+
+    if data == "settings:settime" or data == "settings:time":
+        t = storage.get_daily_time()
+        context.user_data["edit_time"] = t
+        await query.answer()
+        await query.edit_message_text(
+            f"⏰ Время дайджеста: {_fmt_time(t)} ({TZ.key})",
+            reply_markup=build_time_menu(_fmt_time(t)),
+        )
+        return
+
+    if data.startswith("settings:time:"):
+        action = data.split(":")[2]  # "-10" | "+10" | "save"
+        t = context.user_data.get("edit_time", storage.get_daily_time())
+        if action == "-10":
+            t = _shift_time(t, -10)
+            context.user_data["edit_time"] = t
+        elif action == "+10":
+            t = _shift_time(t, +10)
+            context.user_data["edit_time"] = t
+        elif action == "save":
+            storage.set_daily_time(t)
+            context.user_data.pop("edit_time", None)
+        await query.answer("Сохранено" if action == "save" else "")
+        await query.edit_message_text(
+            f"⏰ Время дайджеста: {_fmt_time(t)} ({TZ.key})",
+            reply_markup=build_time_menu(_fmt_time(t)),
+        )
+        return
+
+# для серверного запуска с webhook из server.py
 
 def build_telegram_application() -> Application:
     """
@@ -361,7 +446,7 @@ def build_telegram_application() -> Application:
     return app
 
 
-# ЗАПУСК БОТА И ХЭНДЛЕРЫ
+# ЗАПУСК БОТА И ХЭНДЛЕРЫ - ЛОКАЛЬНО
 def main():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN отсутствует. Укажите его в .env")

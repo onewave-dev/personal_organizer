@@ -1,16 +1,19 @@
 from __future__ import annotations
-from typing import List
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
-import os, json, base64
+
+import os
+import json
+import base64
 from pathlib import Path
+from typing import List, Dict
+from datetime import datetime, timedelta, date
+from zoneinfo import ZoneInfo
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-TOKEN_FILE = "token.json"  # fallback для локальной отладки
-
+TOKEN_FILE = "token.json"
 SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+
 
 def _load_credentials() -> Credentials:
     b64 = os.getenv("GCAL_TOKEN_B64")
@@ -23,11 +26,80 @@ def _load_credentials() -> Credentials:
         info = json.loads(raw)
         return Credentials.from_authorized_user_info(info, scopes=SCOPES)
 
-    # fallback — если захочешь продолжать хранить token.json локально
     if Path(TOKEN_FILE).exists():
         return Credentials.from_authorized_user_file(TOKEN_FILE, scopes=SCOPES)
 
     raise RuntimeError("Нет GCAL_TOKEN_B64/GCAL_TOKEN_JSON и не найден token.json")
+
+
+def _list_calendars(service) -> Dict[str, str]:
+    """
+    Возвращает словарь {calendarId: summary} для всех календарей аккаунта.
+    """
+    result: Dict[str, str] = {}
+    page_token = None
+    while True:
+        resp = service.calendarList().list(pageToken=page_token).execute()
+        for item in resp.get("items", []):
+            cid = item.get("id")
+            name = item.get("summary", "")
+            if cid:
+                result[cid] = name
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+    return result
+
+
+def _effective_calendar_ids(service) -> List[str]:
+    """
+    Возвращает список календарей, исключая те, чьи имена заданы в GCAL_EXCLUDE_NAMES.
+    """
+    exclude_raw = os.getenv("GCAL_EXCLUDE_NAMES", "")
+    exclude_names = {name.strip().lower() for name in exclude_raw.split(",") if name.strip()}
+
+    calendars = _list_calendars(service)
+    kept = [
+        cid for cid, name in calendars.items()
+        if name.lower() not in exclude_names
+    ]
+    # На случай, если исключили всё — оставим хотя бы primary
+    if not kept:
+        return ["primary"]
+    return kept
+
+
+def _sort_key_for_event(e: dict, tz: ZoneInfo) -> datetime:
+    """Дата/время начала для сортировки."""
+    s = e.get("start", {})
+    s_raw = s.get("dateTime") or s.get("date")
+    if not s_raw:
+        return datetime.max.replace(tzinfo=tz)
+    if "T" in s_raw:
+        try:
+            return datetime.fromisoformat(s_raw.replace("Z", "+00:00")).astimezone(tz)
+        except Exception:
+            return datetime.max.replace(tzinfo=tz)
+    try:
+        d = date.fromisoformat(s_raw)
+        return datetime(d.year, d.month, d.day, 0, 0, tzinfo=tz)
+    except Exception:
+        return datetime.max.replace(tzinfo=tz)
+
+
+def _collect_events(service, calendar_ids: List[str], time_min_iso: str, time_max_iso: str) -> List[dict]:
+    items: List[dict] = []
+    for cid in calendar_ids:
+        resp = service.events().list(
+            calendarId=cid,
+            timeMin=time_min_iso,
+            timeMax=time_max_iso,
+            singleEvents=True,
+            orderBy="startTime",
+        ).execute()
+        items.extend(resp.get("items", []))
+    return items
+
 
 def fetch_today_events(tz_name: str) -> List[str]:
     tz = ZoneInfo(tz_name)
@@ -35,26 +107,22 @@ def fetch_today_events(tz_name: str) -> List[str]:
     start = datetime(now.year, now.month, now.day, 0, 0, tzinfo=tz)
     end = start + timedelta(days=1)
 
-    start_utc = start.astimezone(ZoneInfo("UTC")).isoformat()
-    end_utc   = end.astimezone(ZoneInfo("UTC")).isoformat()
+    time_min = start.astimezone(ZoneInfo("UTC")).isoformat()
+    time_max = end.astimezone(ZoneInfo("UTC")).isoformat()
 
     creds = _load_credentials()
     service = build("calendar", "v3", credentials=creds)
 
-    events_result = service.events().list(
-        calendarId="primary",
-        timeMin=start_utc,
-        timeMax=end_utc,
-        singleEvents=True,
-        orderBy="startTime",
-    ).execute()
+    cids = _effective_calendar_ids(service)
+    items = _collect_events(service, cids, time_min, time_max)
+    items.sort(key=lambda e: _sort_key_for_event(e, tz))
 
-    items = events_result.get("items", [])
     out: List[str] = []
     for e in items:
         title = e.get("summary", "(без названия)")
         start_raw = e["start"].get("dateTime") or e["start"].get("date")
-        end_raw   = e["end"].get("dateTime") or e["end"].get("date")
+        end_raw = e["end"].get("dateTime") or e["end"].get("date")
+
         if start_raw and "T" in start_raw:
             st = datetime.fromisoformat(start_raw.replace("Z", "+00:00")).astimezone(tz)
             en = datetime.fromisoformat(end_raw.replace("Z", "+00:00")).astimezone(tz)
@@ -63,10 +131,10 @@ def fetch_today_events(tz_name: str) -> List[str]:
             out.append(f"(весь день) {title}")
     return out
 
+
 def fetch_events_next_days(tz_name: str, start_offset_days: int, end_offset_days: int) -> List[str]:
     """
-    События primary-календаря в окне [сегодня+start_offset_days, сегодня+end_offset_days] включительно.
-    Реализовано через полуинтервал [start, end_next), где end_next = (end_day + 1 день).
+    События календарей в окне [сегодня+start_offset_days, сегодня+end_offset_days] включительно.
     """
     tz = ZoneInfo(tz_name)
     now = datetime.now(tz)
@@ -75,22 +143,16 @@ def fetch_events_next_days(tz_name: str, start_offset_days: int, end_offset_days
     start = day0 + timedelta(days=start_offset_days)
     end_next = day0 + timedelta(days=end_offset_days + 1)
 
-    # ——— ниже повторяем логику выборки из fetch_today_events, но с timeMin/timeMax:
-    creds = _load_credentials()
-    service = build("calendar", "v3", credentials=creds)
-
     time_min = start.astimezone(ZoneInfo("UTC")).isoformat()
     time_max = end_next.astimezone(ZoneInfo("UTC")).isoformat()
 
-    events_result = service.events().list(
-        calendarId="primary",
-        timeMin=time_min,
-        timeMax=time_max,
-        singleEvents=True,
-        orderBy="startTime",
-    ).execute()
+    creds = _load_credentials()
+    service = build("calendar", "v3", credentials=creds)
 
-    items = events_result.get("items", [])
+    cids = _effective_calendar_ids(service)
+    items = _collect_events(service, cids, time_min, time_max)
+    items.sort(key=lambda e: _sort_key_for_event(e, tz))
+
     out: List[str] = []
     for e in items:
         title = e.get("summary", "(без названия)")
@@ -102,14 +164,10 @@ def fetch_events_next_days(tz_name: str, start_offset_days: int, end_offset_days
             en = datetime.fromisoformat(end_raw.replace("Z", "+00:00")).astimezone(tz)
             out.append(f"{st:%d.%m} {st:%H:%M}–{en:%H:%M} {title}")
         else:
-            # событие «на весь день»
             try:
-                # если дата без времени — просто показываем дату начала (локально)
-                st = datetime.fromisoformat(start_raw) if start_raw else None
-                if st and st.tzinfo is None:
-                    st = st.replace(tzinfo=ZoneInfo("UTC")).astimezone(tz)
-                if st:
-                    out.append(f"{st:%d.%m} (весь день) {title}")
+                d = date.fromisoformat(start_raw) if start_raw else None
+                if d:
+                    out.append(f"{d:%d.%m} (весь день) {title}")
                 else:
                     out.append(f"(весь день) {title}")
             except Exception:
