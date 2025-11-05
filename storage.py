@@ -107,13 +107,18 @@ def list_custom_reminders() -> list[dict]:
 
     return out
 
+def list_user_reminders(user_id: int) -> list[dict]:
+    """Возвращает только напоминания, добавленные данным пользователем."""
+    all_items = list_custom_reminders()
+    return [r for r in all_items if r.get("user_id") == user_id]
+
 
 from datetime import datetime  # убедись, что импорт есть сверху
 
 def _norm_text(s: str) -> str:
     return (s or "").strip().lower()
 
-def add_custom_reminder(text: str, due: str | None = None) -> None:
+def add_custom_reminder(text: str, due: str | None = None, user_id: int | None = None) -> None:
     """
     Добавляет напоминание. Дата `due` — ISO 'YYYY-MM-DD' (опционально).
     Если дата указана, валидируем её и сохраняем как ISO.
@@ -164,6 +169,8 @@ def add_custom_reminder(text: str, due: str | None = None) -> None:
     new_item = {"text": text}
     if due:
         new_item["due"] = due
+    if user_id:
+        new_item["user_id"] = user_id
     arr.append(new_item)
 
     data["custom_reminders"] = arr
@@ -175,3 +182,18 @@ def clear_custom_reminders() -> None:
     data = _load()
     data["custom_reminders"] = []
     _save(data)
+
+def delete_user_reminder(user_id: int, index_in_user_list: int) -> bool:
+    all_items = list_custom_reminders()
+    user_items = [i for i in all_items if i.get("user_id") == user_id]
+    
+    # Находим элемент и удаляем из общего списка
+    if not (0 <= index_in_user_list < len(user_items)): 
+        return False
+    target = user_items[index_in_user_list]
+    all_items.remove(target)
+    data = _load()
+    data["custom_reminders"] = all_items
+    _save(data)
+    return True
+

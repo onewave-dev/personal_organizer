@@ -47,9 +47,8 @@ def build_settings_menu(user_id: int | None) -> InlineKeyboardMarkup:
 
 def build_reminders_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 Показать список", callback_data="rem:list")],
-        [InlineKeyboardButton("➕ Добавить",        callback_data="rem:add:start")],
-        [InlineKeyboardButton("🧹 Очистить",       callback_data="rem:clear")],
+        [InlineKeyboardButton("➕ Добавить свое напоминание",        callback_data="rem:add:start")],
+        [InlineKeyboardButton("✏️ Изменить свои напоминания ",       callback_data="rem:edit:start")],
         [InlineKeyboardButton("⬅️ Назад",          callback_data="menu:root")],
     ])
 
@@ -366,7 +365,7 @@ async def cmd_addreminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = " ".join(args_norm).strip()
 
     try:
-        storage.add_custom_reminder(text, due=due_iso)  # due_iso может быть None
+        storage.add_custom_reminder(text, due=due_iso, user_id=update.effective_user.id)  # due_iso может быть None
     except ValueError as e:
         await update.message.reply_text(str(e))
         return
@@ -480,6 +479,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data or ""
 
+
+
     if data == "menu:root":
         return await on_main_menu(query, context)
     
@@ -502,35 +503,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await on_settings_action(update, context)
 
     # Ветвь напоминаний
-    if data == "rem:list":
-        await query.answer()
-        items = storage.list_custom_reminders()
-        if not items:
-            text = "Пока нет пользовательских напоминаний."
-        else:
-            lines = ["📋 Твои пользовательские напоминания:"]
-            for it in items:
-                if isinstance(it, dict):
-                    txt = (it.get("text") or "").strip()
-                    due = it.get("due")
-                    if due:
-                        try:
-                            d = _dt.strptime(due, "%Y-%m-%d").strftime("%d.%m.%Y")
-                            lines.append(f"• {txt} ({d})")
-                        except Exception:
-                            lines.append(f"• {txt} (дата не распознана)")
-                    else:
-                        lines.append(f"• {txt}")
-                else:
-                    lines.append(f"• {str(it)}")
-            text = "\n".join(lines)
-
-        return await query.edit_message_text(
-            text,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Назад", callback_data="menu:reminders")]
-            ])
-        )
     if data == "rem:add:start":
         await query.answer()
         context.user_data["awaiting_reminder"] = True
@@ -543,26 +515,95 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("⬅️ Отмена", callback_data="menu:reminders")]
             ])
         )
-
-    if data == "rem:clear":
+    
+    if data == "rem:edit:start":
         await query.answer()
-        storage.clear_custom_reminders()
+        uid = query.from_user.id
+        items = storage.list_user_reminders(uid)
+        if not items:
+            return await query.edit_message_text(
+                "У тебя пока нет собственных напоминаний.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="menu:reminders")]])
+            )
+        buttons = [[InlineKeyboardButton(r["text"], 
+                    callback_data=f"editrem:{i}") ] for i, r in enumerate(items)]
+        return await query.edit_message_text("Выбери напоминание:", 
+            reply_markup=InlineKeyboardMarkup(buttons + [[InlineKeyboardButton("⬅️ Назад", callback_data="menu:reminders")]]))
+    
+    # обработка выбора конкретного напоминания для редактирования
+    if data.startswith("editrem:"):
+        await query.answer()
+        uid = query.from_user.id
+        idx = int(data.split(":")[1])
+        # защита от некорректного индекса.
+        items = storage.list_user_reminders(uid)
+        if idx < 0 or idx >= len(items): 
+            return await query.edit_message_text("Неверный выбор.")
+        
+        # показываем карточку с действиями 
+        r = items[idx]
+        kb = [[InlineKeyboardButton("✏️ Редактировать", callback_data=f"editrem_edit:{idx}"),
+            InlineKeyboardButton("❌ Удалить",       callback_data=f"editrem_del:{idx}")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="rem:edit:start")]]
+        return await query.edit_message_text(f"«{r.get('text','')}» ({r.get('due','без даты')})", reply_markup=InlineKeyboardMarkup(kb))
+
+    # удаление кастомного напоминания из UI
+    if data.startswith("editrem_del:"):
+        await query.answer()
+        uid = query.from_user.id
+        idx = int(data.split(":")[1])
+        ok = storage.delete_user_reminder(uid, idx)
+        msg = "Удалено." if ok else "Не удалось удалить."
+        await query.edit_message_text(msg)
+    
+    # Редактирование своего напоминания
+    if data.startswith("editrem_edit:"):
+        await query.answer()
+        idx = int(data.split(":")[1])
+        context.user_data["editing_idx"] = idx
         return await query.edit_message_text(
-            "Список напоминаний очищен.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Назад", callback_data="menu:reminders")]
-            ])
-        )
+            "Отправь новый текст (и при желании дату: DD-MM-YYYY) одним сообщением.", 
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", 
+                                                                     callback_data="rem:edit:start")]]))
+
 
 async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (update.effective_message.text or "").strip()
+
+    #обработка редактирования существующего напоминания
+    if context.user_data.get("editing_idx") is not None:
+        idx = context.user_data.get("editing_idx")
+        uid = update.effective_user.id
+        # парсинг даты из текста напоминания 
+        m = re.search(r"(.*)\s(\d{2}-\d{2}-\d{4})$", text)
+        if m:
+            body = m.group(1).strip()
+            ddmmyyyy = m.group(2)
+            try:
+                iso = _dt.strptime(ddmmyyyy, "%d-%m-%Y").strftime("%Y-%m-%d")
+            except ValueError:
+                return await update.effective_message.reply_text("Дата должна быть в формате DD-MM-YYYY.")
+        else:
+            body = text
+            iso = None
+        # вызов обновления и ответ пользователю
+        ok = storage.update_user_reminder(uid, idx, new_text=body, new_due_iso=iso)
+        context.user_data.pop("editing_idx", None) # обнуляем индекс редактирование (после успешного редактирования)
+        context.user_data["awaiting_reminder"] = False
+        reply_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ В раздел «Напоминания»", callback_data="menu:reminders")]
+        ])
+
+        if ok:
+            return await update.effective_message.reply_text("Изменено.", reply_markup=reply_markup)
+        return await update.effective_message.reply_text("Не удалось изменить.", reply_markup=reply_markup)
+
     if not context.user_data.get("awaiting_reminder"):
         return
 
-    text = (update.effective_message.text or "").strip()
     if not text:
         await update.effective_message.reply_text("Пустое сообщение. Отправь текст напоминания.")
         return
-
 
     m = re.search(r"(.*)\s(\d{2}-\d{2}-\d{4})$", text)
     if m:
@@ -573,9 +614,9 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.effective_message.reply_text("Дата должна быть в формате DD-MM-YYYY.")
             return
-        storage.add_custom_reminder(body, iso)
+        storage.add_custom_reminder(body, iso, user_id=update.effective_user.id)
     else:
-        storage.add_custom_reminder(text)
+        storage.add_custom_reminder(text, user_id=update.effective_user.id)
 
     context.user_data["awaiting_reminder"] = False
     await update.effective_message.reply_text(
@@ -584,7 +625,6 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("⬅️ В раздел «Напоминания»", callback_data="menu:reminders")]
         ])
     )
-
 
 # для серверного запуска с webhook из server.py
 
