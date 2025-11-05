@@ -469,6 +469,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         return await query.edit_message_text(
             "🧷 Раздел «Напоминания»",
+            cmd_testdigest(update, context) 
             reply_markup=build_reminders_menu()
         )
 
