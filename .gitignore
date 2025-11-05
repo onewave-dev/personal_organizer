@@ -3,9 +3,6 @@
 admin/
 .venv
 .env
-
-*.json
-
 gcal_auth_oneoff.py
 
 
@@ -84,3 +81,8 @@ htmlcov/
 # ===== Optional local scripts =====
 gcal_auth_oneoff.py
 test_*.py
+
+# ===== SSH keys =====
+.ssh/
+
+
