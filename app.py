@@ -74,6 +74,50 @@ def _shift_time(t: _t, minutes: int) -> _t:
     return _t(shifted.hour, shifted.minute)
 
 
+# --- формирование текста дайджеста ---
+
+def build_digest_text() -> str:
+    now_dt = datetime.now(TZ)
+    now_str = now_dt.strftime("%d.%m.%Y %H:%M")
+    today = now_dt.date()
+    today_iso = today.isoformat()
+
+    all_rem = storage.list_custom_reminders()
+    # нормализация формата
+    normalized = []
+    for item in all_rem:
+        if isinstance(item, dict):
+            normalized.append(item)
+        else:
+            normalized.append({"text": str(item)})
+    all_rem = normalized
+
+    undated = [r for r in all_rem if not r.get("due")]
+    today_dated = [r for r in all_rem if r.get("due") == today_iso]
+
+    # далее твой существующий код формирования week, month, events_today, events_week, events_month
+    # ...
+    # потом собираем текст в список
+    lines = [
+        "🌅 Доброе утро!",
+        f"Сейчас: {now_str}",
+        "",
+    ]
+
+    if undated or today_dated:
+        lines.append("🧷 Напоминания:")
+        for x in undated:
+            lines.append(f"• {x['text']}")
+        for it in today_dated:
+            lines.append(f"• {it['text']} (сегодня)")
+    else:
+        lines.append("🧷 Напоминаний пока нет.")
+
+    # ... (остальной код построения календаря и списков событий)
+
+    return "\n".join(lines)
+
+
 # 2) /start — приветствие и проверка, что бот «живой»
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id if update.effective_user else None
@@ -93,114 +137,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Тест ок ✅")
 
-# 4) Утренний дайджест
+# 4) Отправка дайджеста
 async def send_morning_digest(context: ContextTypes.DEFAULT_TYPE):
-    now_dt = datetime.now(TZ)
-    now_str = now_dt.strftime("%d.%m.%Y %H:%M")
-    today = now_dt.date()
-    today_iso = today.isoformat()
-
-    # 1) Единый источник напоминаний
-    all_rem = storage.list_custom_reminders()
-
-    undated = [r for r in all_rem if "due" not in r]
-    today_dated = [r for r in all_rem if r.get("due") == today_iso]
-    # Нормализуем: строки → {"text": "..."} для совместимости со старым форматом
-    norm = []
-    for it in all_rem:
-        if isinstance(it, dict):
-            norm.append(it)
-        else:
-            norm.append({"text": str(it)})
-    all_rem = norm
-
-    # «В ближайшую неделю»: завтра..+7 дней
-    w_start = today + timedelta(days=1)
-    w_end = today + timedelta(days=7)
-    week = []
-    for r in all_rem:
-        due = r.get("due")
-        if not due:
-            continue
-        try:
-            d = datetime.strptime(due, "%Y-%m-%d").date()
-        except ValueError:
-            continue
-        if w_start <= d <= w_end:
-            week.append(r)
-    week.sort(key=lambda x: x["due"])
-
-    # «В ближайший месяц»: +8..+31 дней
-    m_start = today + timedelta(days=8)
-    m_end = today + timedelta(days=31)
-    month = []
-    for r in all_rem:
-        due = r.get("due")
-        if not due:
-            continue
-        try:
-            d = datetime.strptime(due, "%Y-%m-%d").date()
-        except ValueError:
-            continue
-        if m_start <= d <= m_end:
-            month.append(r)
-    month.sort(key=lambda x: x["due"])
-
-    # 2) Календарь
-    events_today = fetch_today_events(TZ_NAME)
-    events_week  = fetch_events_next_days(TZ_NAME, 1, 7)
-    events_month = fetch_events_next_days(TZ_NAME, 8, 31)
-
-    # 3) Формируем текст
-    lines = [
-        "🌅 Доброе утро!",
-        f"Сейчас: {now_str}",
-        "",
-    ]
-
-    # Напоминания: без даты + «сегодня»
-    if undated or today_dated:
-        lines.append("🧷 Напоминания:")
-        for x in undated:
-            lines.append(f"• {x['text']}")
-        for it in today_dated:
-            lines.append(f"• {it['text']} (сегодня)")
-    else:
-        lines.append("🧷 Напоминаний пока нет.")
-
-    lines.append("")
-
-    # Сегодня в календаре
-    if events_today:
-        lines.append("📅 Сегодня в календаре:")
-        lines += [f"• {e}" for e in events_today]
-    else:
-        lines.append("📅 Событий в календаре на сегодня не найдено.")
-
-    # В ближайшую неделю
-    if events_week or week:
-        lines.append("")
-        lines.append("⏭️ В ближайшую неделю:")
-        for e in events_week:
-            lines.append(f"• {e}")
-        for it in week:
-            due = it["due"]
-            lines.append(f"• {due[8:10]}.{due[5:7]} {it['text']}")
-
-    # В ближайший месяц
-    if events_month or month:
-        lines.append("")
-        lines.append("📆 В ближайший месяц:")
-        for e in events_month:
-            lines.append(f"• {e}")
-        for it in month:
-            due = it["due"]
-            lines.append(f"• {due[8:10]}.{due[5:7]} {it['text']}")
-
     chat_id = context.job.data["chat_id"]
-    await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
-
-
+    digest_text = build_digest_text()
+    await context.bot.send_message(chat_id=chat_id, text=digest_text)
 
 
 # 5) Команда для мгновенной проверки дайджеста
@@ -331,7 +272,7 @@ async def cmd_addreminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             d_i, m_i, y_i = int(d_str), int(m_str), int(y_str)
             # строгая проверка календаря
-            dt = datetime(y_i, m_i, d_i)
+            dt = _dt(y_i, m_i, d_i)
             due_iso = dt.strftime("%Y-%m-%d")
             text = " ".join(args_norm[:-1]).rstrip(" ,\t\r\n")
             if not text:
@@ -381,7 +322,7 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
             due = it.get("due")
             if due:
                 try:
-                    d = datetime.strptime(due, "%Y-%m-%d")
+                    d = _dt.strptime(due, "%Y-%m-%d")
                     date_fmt = d.strftime("%d.%m.%Y")
                     lines.append(f"• {text} ({date_fmt})")
                 except ValueError:
@@ -467,11 +408,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if data == "menu:reminders":
         await query.answer()
-        return await query.edit_message_text(
-            "🧷 Раздел «Напоминания»",
-            cmd_testdigest(update, context), 
+        chat_id = query.message.chat_id
+        digest_text = build_digest_text()
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=digest_text,
             reply_markup=build_reminders_menu()
         )
+        return
 
     if data == "menu:settings":
         return await on_settings_menu(query, context)
