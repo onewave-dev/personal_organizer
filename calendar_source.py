@@ -128,7 +128,7 @@ def fetch_today_events(tz_name: str) -> List[str]:
             en = datetime.fromisoformat(end_raw.replace("Z", "+00:00")).astimezone(tz)
             out.append(f"{st:%H:%M}–{en:%H:%M} {title}")
         else:
-            out.append(f"(весь день) {title}")
+            out.append(f" {title}")
     return out
 
 
@@ -167,9 +167,9 @@ def fetch_events_next_days(tz_name: str, start_offset_days: int, end_offset_days
             try:
                 d = date.fromisoformat(start_raw) if start_raw else None
                 if d:
-                    out.append(f"{d:%d.%m} (весь день) {title}")
+                    out.append(f"{d:%d.%m} {title}")
                 else:
-                    out.append(f"(весь день) {title}")
+                    out.append(f" {title}")
             except Exception:
-                out.append(f"(весь день) {title}")
+                out.append(f" {title}")
     return out
