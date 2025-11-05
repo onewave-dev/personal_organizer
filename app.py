@@ -77,7 +77,7 @@ def _shift_time(t: _t, minutes: int) -> _t:
 # --- формирование текста дайджеста ---
 
 def build_digest_text() -> str:
-    now_dt = datetime.now(TZ)
+    now_dt = _dt.now(TZ)
     now_str = now_dt.strftime("%d.%m.%Y %H:%M")
     today = now_dt.date()
     today_iso = today.isoformat()
@@ -486,8 +486,7 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("Пустое сообщение. Отправь текст напоминания.")
         return
 
-    import re
-    from datetime import datetime as _dt
+
     m = re.search(r"(.*)\s(\d{2}-\d{2}-\d{4})$", text)
     if m:
         body = m.group(1).strip()
