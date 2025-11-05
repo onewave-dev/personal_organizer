@@ -82,8 +82,8 @@ def build_digest_text() -> str:
     today = now_dt.date()
     today_iso = today.isoformat()
 
+    # 1) Напоминания (нормализуем старый формат строк → словари)
     all_rem = storage.list_custom_reminders()
-    # нормализация формата
     normalized = []
     for item in all_rem:
         if isinstance(item, dict):
@@ -95,27 +95,104 @@ def build_digest_text() -> str:
     undated = [r for r in all_rem if not r.get("due")]
     today_dated = [r for r in all_rem if r.get("due") == today_iso]
 
-    # далее твой существующий код формирования week, month, events_today, events_week, events_month
-    # ...
-    # потом собираем текст в список
+    # «В ближайшую неделю»: завтра..+7 дней
+    w_start = today + _td(days=1)
+    w_end   = today + _td(days=7)
+    week = []
+    for r in all_rem:
+        due = r.get("due")
+        if not due:
+            continue
+        try:
+            d = _dt.strptime(due, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if w_start <= d <= w_end:
+            week.append({"text": r.get("text", ""), "due": due})
+    week.sort(key=lambda x: x["due"])
+
+    # «В ближайший месяц»: +8..+31 дней
+    m_start = today + _td(days=8)
+    m_end   = today + _td(days=31)
+    month = []
+    for r in all_rem:
+        due = r.get("due")
+        if not due:
+            continue
+        try:
+            d = _dt.strptime(due, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if m_start <= d <= m_end:
+            month.append({"text": r.get("text", ""), "due": due})
+    month.sort(key=lambda x: x["due"])
+
+    # 2) Календарь
+    try:
+        events_today = fetch_today_events(TZ_NAME)               # список строк
+    except Exception:
+        events_today = []
+    try:
+        events_week  = fetch_events_next_days(TZ_NAME, 1, 7)     # список строк
+    except Exception:
+        events_week = []
+    try:
+        events_month = fetch_events_next_days(TZ_NAME, 8, 31)    # список строк
+    except Exception:
+        events_month = []
+
+    # 3) Формируем текст
     lines = [
         "🌅 Доброе утро!",
         f"Сейчас: {now_str}",
         "",
     ]
 
+    # Напоминания: без даты + «сегодня»
     if undated or today_dated:
         lines.append("🧷 Напоминания:")
         for x in undated:
-            lines.append(f"• {x['text']}")
+            txt = (x.get("text") or "").strip()
+            if txt:
+                lines.append(f"• {txt}")
         for it in today_dated:
-            lines.append(f"• {it['text']} (сегодня)")
+            txt = (it.get("text") or "").strip()
+            if txt:
+                lines.append(f"• {txt} (сегодня)")
     else:
         lines.append("🧷 Напоминаний пока нет.")
 
-    # ... (остальной код построения календаря и списков событий)
+    lines.append("")
+
+    # Сегодня в календаре
+    if events_today:
+        lines.append("📅 Сегодня в календаре:")
+        lines += [f"• {e}" for e in events_today]
+    else:
+        lines.append("📅 Событий в календаре на сегодня не найдено.")
+
+    # В ближайшую неделю
+    if events_week or week:
+        lines.append("")
+        lines.append("⏭️ В ближайшую неделю:")
+        for e in events_week:
+            lines.append(f"• {e}")
+        for it in week:
+            due = it["due"]  # YYYY-MM-DD
+            lines.append(f"• {due[8:10]}.{due[5:7]} {it['text']}")
+
+    # В ближайший месяц
+    if events_month or month:
+        lines.append("")
+        lines.append("📆 В ближайший месяц:")
+        for e in events_month:
+            lines.append(f"• {e}")
+        for it in month:
+            due = it["due"]  # YYYY-MM-DD
+            lines.append(f"• {due[8:10]}.{due[5:7]} {it['text']}")
 
     return "\n".join(lines)
+
 
 
 # 2) /start — приветствие и проверка, что бот «живой»
