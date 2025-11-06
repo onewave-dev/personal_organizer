@@ -12,8 +12,8 @@ from zoneinfo import ZoneInfo
 
 import storage
 from calendar_source import (
-    fetch_today_events, fetch_events_next_days,
-    fetch_tasks_today,  fetch_tasks_next_days,
+    fetch_today_events, fetch_events_next_days, fetch_events_struct,
+    fetch_tasks_today, fetch_tasks_next_days, fetch_tasks_struct
 )
 
 # 1) Загружаем .env
@@ -75,6 +75,11 @@ def _shift_time(t: _t, minutes: int) -> _t:
     shifted = base + _td(minutes=minutes)
     return _t(shifted.hour, shifted.minute)
 
+def _fmt_unified(d, title, t):
+    dd = f"{d.day:02d}.{d.month:02d}"
+    return f"• {dd} {title}" + (f" {t}" if t else "")
+
+
 
 # --- формирование текста дайджеста ---
 
@@ -83,6 +88,13 @@ def build_digest_text() -> str:
     now_str = now_dt.strftime("%d.%m.%Y %H:%M")
     today = now_dt.date()
     today_iso = today.isoformat()
+
+    ev_today  = fetch_events_struct(TZ_NAME, 0, 0)
+    ev_week   = fetch_events_struct(TZ_NAME, 1, 7)
+    ev_month  = fetch_events_struct(TZ_NAME, 8, 31)
+    ts_today  = fetch_tasks_struct(TZ_NAME, 0, 0)
+    ts_week   = fetch_tasks_struct(TZ_NAME, 1, 7)
+    ts_month  = fetch_tasks_struct(TZ_NAME, 8, 31)
 
     # 1) Напоминания (нормализуем старый формат строк → словари)
     all_rem = storage.list_custom_reminders()
@@ -97,135 +109,55 @@ def build_digest_text() -> str:
     undated = [r for r in all_rem if not r.get("due")]
     today_dated = [r for r in all_rem if r.get("due") == today_iso]
 
-    # «В ближайшую неделю»: завтра..+7 дней
-    w_start = today + _td(days=1)
-    w_end   = today + _td(days=7)
-    week = []
+    rem_today = []
+    rem_week  = []
+    rem_month = []
     for r in all_rem:
+        txt = (r.get("text") or "").strip()
         due = r.get("due")
+        if not txt:
+            continue
         if not due:
+            rem_today.append({"date": today, "title": txt, "time": ""})
             continue
         try:
             d = _dt.strptime(due, "%Y-%m-%d").date()
         except ValueError:
             continue
-        if w_start <= d <= w_end:
-            week.append({"text": r.get("text", ""), "due": due})
-    week.sort(key=lambda x: x["due"])
-
-    # «В ближайший месяц»: +8..+31 дней
-    m_start = today + _td(days=8)
-    m_end   = today + _td(days=31)
-    month = []
-    for r in all_rem:
-        due = r.get("due")
-        if not due:
-            continue
-        try:
-            d = _dt.strptime(due, "%Y-%m-%d").date()
-        except ValueError:
-            continue
-        if m_start <= d <= m_end:
-            month.append({"text": r.get("text", ""), "due": due})
-    month.sort(key=lambda x: x["due"])
-
-    # 2) Календарь
-    try:
-        events_today = fetch_today_events(TZ_NAME)               # список строк
-    except Exception:
-        events_today = []
-    try:
-        events_week  = fetch_events_next_days(TZ_NAME, 1, 7)     # список строк
-    except Exception:
-        events_week = []
-    try:
-        events_month = fetch_events_next_days(TZ_NAME, 8, 31)    # список строк
-    except Exception:
-        events_month = []
-    
-    # 2.1) Задачи
-    try:
-        tasks_today = fetch_tasks_today(TZ_NAME)
-    except Exception as e:
-        print(f"[tasks] fetch_tasks_today error: {e}")
-        tasks_today = []
-    try:
-        tasks_week = fetch_tasks_next_days(TZ_NAME, 1, 7)
-    except Exception as e:
-        print(f"[tasks] fetch_tasks_next_days(1,7) error: {e}")
-        tasks_week = []
-    try:
-        tasks_month = fetch_tasks_next_days(TZ_NAME, 8, 31)
-    except Exception as e:
-        print(f"[tasks] fetch_tasks_next_days(8,31) error: {e}")
-        tasks_month = []
-    
-    print(f"[tasks] today={len(tasks_today)} week={len(tasks_week)} month={len(tasks_month)}") # для диагностики
-
-
+        if d == today:
+            rem_today.append({"date": d, "title": txt, "time": ""})
+        elif today + _td(days=1) <= d <= today + _td(days=7):
+            rem_week.append({"date": d, "title": txt, "time": ""})
+        elif today + _td(days=8) <= d <= today + _td(days=31):
+            rem_month.append({"date": d, "title": txt, "time": ""})
 
     # 3) Формируем текст
     lines = [
-        "🌅 Доброе утро!",
-        f"Сейчас: {now_str}",
+        f"🌅 Доброе утро! Сейчас: {now_str}",
         "",
+        "Ваши события и напоминания."
     ]
 
-    # Напоминания: без даты + «сегодня»
-    if undated or today_dated:
-        lines.append("🧷 Напоминания:")
-        for x in undated:
-            txt = (x.get("text") or "").strip()
-            if txt:
-                lines.append(f"• {txt}")
-        for it in today_dated:
-            txt = (it.get("text") or "").strip()
-            if txt:
-                lines.append(f"• {txt} (сегодня)")
-    else:
-        lines.append("🧷 Напоминаний пока нет.")
-
+    today_items = ev_today + ts_today + rem_today
+    today_items.sort(key=lambda x: (x["date"], x["time"] or "99:99"))
+    lines.append("Сегодня:")
+    for it in today_items:
+        lines.append(_fmt_unified(it["date"], it["title"], it["time"]))
     lines.append("")
+    week_items = ev_week + ts_week + rem_week
+    week_items.sort(key=lambda x: (x["date"], x["time"] or "99:99"))
+    lines.append("В ближайшую неделю:")
+    for it in week_items:
+        lines.append(_fmt_unified(it["date"], it["title"], it["time"]))
+    lines.append("")
+    month_items = ev_month + ts_month + rem_month
+    month_items.sort(key=lambda x: (x["date"], x["time"] or "99:99"))
+    lines.append("В ближайший месяц:")
+    for it in month_items:
+        lines.append(_fmt_unified(it["date"], it["title"], it["time"]))
 
-    # Сегодня в календаре
-    if events_today:
-        lines.append("📅 Сегодня в календаре:")
-        lines += [f"• {e}" for e in events_today]
-    else:
-        lines.append("📅 Событий в календаре на сегодня не найдено.")
-
-    # Сегодняшние задачи
-    if tasks_today:
-        lines.append("")
-        lines.append("✅ Задачи на сегодня:")
-        lines += [f"• {t}" for t in tasks_today]
-
-    # В ближайшую неделю
-    if events_week or week or tasks_week:
-        lines.append("")
-        lines.append("⏭️ В ближайшую неделю:")
-        for e in events_week:
-            lines.append(f"• {e}")
-        for it in week:
-            due = it["due"]  # YYYY-MM-DD
-            lines.append(f"• {due[8:10]}.{due[5:7]} {it['text']}")
-        for t in tasks_week:
-            lines.append(f"• {t}") 
-
-    # В ближайший месяц
-    if events_month or month or tasks_month:
-        lines.append("")
-        lines.append("📆 В ближайший месяц:")
-        for e in events_month:
-            lines.append(f"• {e}")
-        for it in month:
-            due = it["due"]  # YYYY-MM-DD
-            lines.append(f"• {due[8:10]}.{due[5:7]} {it['text']}")
-        for t in tasks_month:
-            lines.append(f"• {t}")
 
     return "\n".join(lines)
-
 
 
 # 2) /start — приветствие и проверка, что бот «живой»
