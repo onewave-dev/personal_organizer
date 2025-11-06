@@ -195,7 +195,7 @@ def build_digest_text() -> str:
         lines += [f"• {t}" for t in tasks_today]
 
     # В ближайшую неделю
-    if events_week or week:
+    if events_week or week or tasks_week:
         lines.append("")
         lines.append("⏭️ В ближайшую неделю:")
         for e in events_week:
@@ -204,10 +204,10 @@ def build_digest_text() -> str:
             due = it["due"]  # YYYY-MM-DD
             lines.append(f"• {due[8:10]}.{due[5:7]} {it['text']}")
         for t in tasks_week:
-            lines.append(f"• {t}")
-
+            lines.append(f"• {t}") 
+            
     # В ближайший месяц
-    if events_month or month:
+    if events_month or month or tasks_month:
         lines.append("")
         lines.append("📆 В ближайший месяц:")
         for e in events_month:
