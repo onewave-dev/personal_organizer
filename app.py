@@ -205,7 +205,7 @@ def build_digest_text() -> str:
             lines.append(f"• {due[8:10]}.{due[5:7]} {it['text']}")
         for t in tasks_week:
             lines.append(f"• {t}") 
-            
+
     # В ближайший месяц
     if events_month or month or tasks_month:
         lines.append("")

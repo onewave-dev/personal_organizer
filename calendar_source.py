@@ -195,7 +195,9 @@ def _list_tasklists(service) -> list[dict]:
             break
     return items
 
-def _list_tasks_in_window(service, tasklist_id: str, due_min_iso: str, due_max_iso: str) -> list[dict]:
+def _list_tasks_all(service, tasklist_id: str) -> list[dict]:
+    """Забираем все невыполненные задачи из списка (без dueMin/dueMax),
+    дальше фильтруем сами — так надёжнее с TZ и разными форматами due."""
     items = []
     page_token = None
     while True:
@@ -204,8 +206,6 @@ def _list_tasks_in_window(service, tasklist_id: str, due_min_iso: str, due_max_i
             showCompleted=False,
             showDeleted=False,
             showHidden=False,
-            dueMin=due_min_iso,
-            dueMax=due_max_iso,
             maxResults=100,
             pageToken=page_token,
             orderBy="dueDate",
@@ -215,6 +215,28 @@ def _list_tasks_in_window(service, tasklist_id: str, due_min_iso: str, due_max_i
         if not page_token:
             break
     return items
+
+def _filter_tasks_by_window(tasks: list[dict], tz: ZoneInfo, start_local_day: date, end_local_day: date) -> list[dict]:
+    """Оставляем задачи, чей due-переведённый-в-локаль день попадает в [start..end] включительно."""
+    kept = []
+    for t in tasks:
+        due_raw = t.get("due")
+        if not due_raw:
+            continue
+        try:
+            if "T" in due_raw:
+                # RFC3339 c временем — переводим в TZ и берём .date()
+                dt = datetime.fromisoformat(due_raw.replace("Z", "+00:00")).astimezone(tz)
+                d = dt.date()
+            else:
+                # Только дата
+                d = date.fromisoformat(due_raw)
+        except Exception:
+            continue
+        if start_local_day <= d <= end_local_day:
+            kept.append(t)
+    return kept
+
 
 def _format_tasks_lines(tasks: list[dict], tz: ZoneInfo) -> list[str]:
     """
@@ -253,27 +275,25 @@ def _tasks_time_window_utc(tz_name: str, start_day_offset: int, end_day_offset: 
     return start_utc, end_utc
 
 def fetch_tasks_today(tz_name: str) -> list[str]:
-    """
-    Невыполненные задачи с due на СЕГОДНЯ. Строки для дайджеста.
-    """
-    due_min, due_max = _tasks_time_window_utc(tz_name, 0, 0)
     tz = ZoneInfo(tz_name)
+    now = datetime.now(tz).date()
     service = _tasks_service()
     lines: list[str] = []
     for lst in _list_tasklists(service):
-        tasks = _list_tasks_in_window(service, lst["id"], due_min, due_max)
+        tasks = _list_tasks_all(service, lst["id"])
+        tasks = _filter_tasks_by_window(tasks, tz, now, now)
         lines.extend(_format_tasks_lines(tasks, tz))
     return sorted(lines)
 
 def fetch_tasks_next_days(tz_name: str, start_offset_days: int, end_offset_days: int) -> list[str]:
-    """
-    Невыполненные задачи с due в окне [сегодня+start, сегодня+end] (включительно).
-    """
-    due_min, due_max = _tasks_time_window_utc(tz_name, start_offset_days, end_offset_days)
     tz = ZoneInfo(tz_name)
+    today = datetime.now(tz).date()
+    start_day = today + timedelta(days=start_offset_days)
+    end_day   = today + timedelta(days=end_offset_days)
     service = _tasks_service()
     lines: list[str] = []
     for lst in _list_tasklists(service):
-        tasks = _list_tasks_in_window(service, lst["id"], due_min, due_max)
+        tasks = _list_tasks_all(service, lst["id"])
+        tasks = _filter_tasks_by_window(tasks, tz, start_day, end_day)
         lines.extend(_format_tasks_lines(tasks, tz))
     return sorted(lines)
