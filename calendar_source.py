@@ -178,6 +178,51 @@ def fetch_events_next_days(tz_name: str, start_offset_days: int, end_offset_days
                 out.append(f" {title}")
     return out
 
+def fetch_events_struct(tz_name: str, start_offset_days: int, end_offset_days: int) -> list[dict]:
+    tz = ZoneInfo(tz_name)
+    now = datetime.now(tz)
+    day0 = datetime(now.year, now.month, now.day, 0, 0, tzinfo=tz)
+    start, end_next = day0 + timedelta(days=start_offset_days), day0 + timedelta(days=end_offset_days + 1)
+    service = build("calendar", "v3", credentials=_load_credentials())
+    cids = _effective_calendar_ids(service)
+    items = _collect_events(service, cids, start.astimezone(ZoneInfo("UTC")).isoformat(), end_next.astimezone(ZoneInfo("UTC")).isoformat())
+    items.sort(key=lambda e: _sort_key_for_event(e, tz))
+    out = []
+    for e in items:
+        title = (e.get("summary") or "(без названия)").strip()
+        s = e["start"].get("dateTime") or e["start"].get("date")
+        if s and "T" in s:
+            st = datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(tz)
+            out.append({"date": st.date(), "title": title, "time": st.strftime("%H:%M")})
+        else:
+            d = date.fromisoformat(s) if s else None
+            if d:
+                out.append({"date": d, "title": title, "time": ""})
+    return out
+
+def fetch_tasks_struct(tz_name: str, start_offset_days: int, end_offset_days: int) -> list[dict]:
+    tz = ZoneInfo(tz_name)
+    today = datetime.now(tz).date()
+    start_day, end_day = today + timedelta(days=start_offset_days), today + timedelta(days=end_offset_days)
+    service = _tasks_service()
+    out = []
+    for lst in _list_tasklists(service):
+        tasks = _list_tasks_all(service, lst["id"])
+        tasks = _filter_tasks_by_window(tasks, tz, start_day, end_day)
+        for t in tasks:
+            title = (t.get("title") or "").strip() or "(без названия)"
+            due = t.get("due")
+            if not due:
+                continue
+            if "T" in due:
+                dt = datetime.fromisoformat(due.replace("Z", "+00:00")).astimezone(tz)
+                out.append({"date": dt.date(), "title": title, "time": dt.strftime("%H:%M")})
+            else:
+                d = date.fromisoformat(due)
+                out.append({"date": d, "title": title, "time": ""})
+
+    return sorted(out, key=lambda x: (x["date"], x["time"] or "99:99"))
+
 # --- Google Tasks ---
 
 def _tasks_service():
