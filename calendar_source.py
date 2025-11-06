@@ -11,8 +11,12 @@ from zoneinfo import ZoneInfo
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
+
 TOKEN_FILE = "token.json"
-SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+SCOPES = [
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/tasks.readonly",
+]
 
 
 def _load_credentials() -> Credentials:
@@ -173,3 +177,103 @@ def fetch_events_next_days(tz_name: str, start_offset_days: int, end_offset_days
             except Exception:
                 out.append(f" {title}")
     return out
+
+# --- Google Tasks ---
+
+def _tasks_service():
+    creds = _load_credentials()
+    return build("tasks", "v1", credentials=creds)
+
+def _list_tasklists(service) -> list[dict]:
+    items = []
+    page_token = None
+    while True:
+        resp = service.tasklists().list(maxResults=100, pageToken=page_token).execute()
+        items.extend(resp.get("items", []))
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+    return items
+
+def _list_tasks_in_window(service, tasklist_id: str, due_min_iso: str, due_max_iso: str) -> list[dict]:
+    items = []
+    page_token = None
+    while True:
+        resp = service.tasks().list(
+            tasklist=tasklist_id,
+            showCompleted=False,
+            showDeleted=False,
+            showHidden=False,
+            dueMin=due_min_iso,
+            dueMax=due_max_iso,
+            maxResults=100,
+            pageToken=page_token,
+            orderBy="dueDate",
+        ).execute()
+        items.extend(resp.get("items", []))
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+    return items
+
+def _format_tasks_lines(tasks: list[dict], tz: ZoneInfo) -> list[str]:
+    """
+    Делает «красивые» строки по образцу календаря:
+      • 07.11 14:30 [Задача] Название
+      • 07.11 [Задача] Название
+    """
+    out: list[str] = []
+    for t in tasks:
+        title = (t.get("title") or "").strip() or "(без названия)"
+        due_raw = t.get("due")
+        if not due_raw:
+            # без due — не показываем в датированных подборках
+            continue
+        try:
+            if "T" in due_raw:
+                dt = datetime.fromisoformat(due_raw.replace("Z", "+00:00")).astimezone(tz)
+                out.append(f"{dt:%d.%m} {dt:%H:%M} [Задача] {title}")
+            else:
+                d = date.fromisoformat(due_raw)
+                out.append(f"{d:%d.%m} [Задача] {title}")
+        except Exception:
+            out.append(f"[Задача] {title}")
+    return out
+
+def _tasks_time_window_utc(tz_name: str, start_day_offset: int, end_day_offset: int) -> tuple[str, str]:
+    """
+    Возвращает (dueMin, dueMax) в RFC3339 (UTC, с Z) для окна «сегодня+offset…».
+    """
+    tz = ZoneInfo(tz_name)
+    now = datetime.now(tz)
+    start_local = datetime(now.year, now.month, now.day, 0, 0, 0, tzinfo=tz) + timedelta(days=start_day_offset)
+    end_local   = datetime(now.year, now.month, now.day, 0, 0, 0, tzinfo=tz) + timedelta(days=end_day_offset + 1)
+    start_utc = start_local.astimezone(ZoneInfo("UTC")).isoformat().replace("+00:00", "Z")
+    end_utc   = end_local.astimezone(ZoneInfo("UTC")).isoformat().replace("+00:00", "Z")
+    return start_utc, end_utc
+
+def fetch_tasks_today(tz_name: str) -> list[str]:
+    """
+    Невыполненные задачи с due на СЕГОДНЯ. Строки для дайджеста.
+    """
+    due_min, due_max = _tasks_time_window_utc(tz_name, 0, 0)
+    tz = ZoneInfo(tz_name)
+    service = _tasks_service()
+    lines: list[str] = []
+    for lst in _list_tasklists(service):
+        tasks = _list_tasks_in_window(service, lst["id"], due_min, due_max)
+        lines.extend(_format_tasks_lines(tasks, tz))
+    return sorted(lines)
+
+def fetch_tasks_next_days(tz_name: str, start_offset_days: int, end_offset_days: int) -> list[str]:
+    """
+    Невыполненные задачи с due в окне [сегодня+start, сегодня+end] (включительно).
+    """
+    due_min, due_max = _tasks_time_window_utc(tz_name, start_offset_days, end_offset_days)
+    tz = ZoneInfo(tz_name)
+    service = _tasks_service()
+    lines: list[str] = []
+    for lst in _list_tasklists(service):
+        tasks = _list_tasks_in_window(service, lst["id"], due_min, due_max)
+        lines.extend(_format_tasks_lines(tasks, tz))
+    return sorted(lines)

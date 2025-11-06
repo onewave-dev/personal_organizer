@@ -11,7 +11,10 @@ from datetime import time as _t, datetime as _dt, timedelta as _td
 from zoneinfo import ZoneInfo
 
 import storage
-from calendar_source import fetch_today_events, fetch_events_next_days
+from calendar_source import (
+    fetch_today_events, fetch_events_next_days,
+    fetch_tasks_today,  fetch_tasks_next_days,
+)
 
 # 1) Загружаем .env
 load_dotenv()
@@ -139,6 +142,21 @@ def build_digest_text() -> str:
         events_month = fetch_events_next_days(TZ_NAME, 8, 31)    # список строк
     except Exception:
         events_month = []
+    
+    # 2.1) Задачи
+    try:
+        tasks_today = fetch_tasks_today(TZ_NAME)
+    except Exception:
+        tasks_today = []
+    try:
+        tasks_week = fetch_tasks_next_days(TZ_NAME, 1, 7)
+    except Exception:
+        tasks_week = []
+    try:
+        tasks_month = fetch_tasks_next_days(TZ_NAME, 8, 31)
+    except Exception:
+        tasks_month = []
+
 
     # 3) Формируем текст
     lines = [
@@ -170,6 +188,12 @@ def build_digest_text() -> str:
     else:
         lines.append("📅 Событий в календаре на сегодня не найдено.")
 
+    # Сегодняшние задачи
+    if tasks_today:
+        lines.append("")
+        lines.append("✅ Задачи на сегодня:")
+        lines += [f"• {t}" for t in tasks_today]
+
     # В ближайшую неделю
     if events_week or week:
         lines.append("")
@@ -179,6 +203,8 @@ def build_digest_text() -> str:
         for it in week:
             due = it["due"]  # YYYY-MM-DD
             lines.append(f"• {due[8:10]}.{due[5:7]} {it['text']}")
+        for t in tasks_week:
+            lines.append(f"• {t}")
 
     # В ближайший месяц
     if events_month or month:
@@ -189,6 +215,8 @@ def build_digest_text() -> str:
         for it in month:
             due = it["due"]  # YYYY-MM-DD
             lines.append(f"• {due[8:10]}.{due[5:7]} {it['text']}")
+        for t in tasks_month:
+            lines.append(f"• {t}")
 
     return "\n".join(lines)
 
