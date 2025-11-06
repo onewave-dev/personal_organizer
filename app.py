@@ -146,16 +146,22 @@ def build_digest_text() -> str:
     # 2.1) Задачи
     try:
         tasks_today = fetch_tasks_today(TZ_NAME)
-    except Exception:
+    except Exception as e:
+        print(f"[tasks] fetch_tasks_today error: {e}")
         tasks_today = []
     try:
         tasks_week = fetch_tasks_next_days(TZ_NAME, 1, 7)
-    except Exception:
+    except Exception as e:
+        print(f"[tasks] fetch_tasks_next_days(1,7) error: {e}")
         tasks_week = []
     try:
         tasks_month = fetch_tasks_next_days(TZ_NAME, 8, 31)
-    except Exception:
+    except Exception as e:
+        print(f"[tasks] fetch_tasks_next_days(8,31) error: {e}")
         tasks_month = []
+    
+    print(f"[tasks] today={len(tasks_today)} week={len(tasks_week)} month={len(tasks_month)}") # для диагностики
+
 
 
     # 3) Формируем текст

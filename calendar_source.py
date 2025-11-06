@@ -208,7 +208,7 @@ def _list_tasks_all(service, tasklist_id: str) -> list[dict]:
             showHidden=False,
             maxResults=100,
             pageToken=page_token,
-            orderBy="dueDate",
+            orderBy="due",   # корректное значение
         ).execute()
         items.extend(resp.get("items", []))
         page_token = resp.get("nextPageToken")
