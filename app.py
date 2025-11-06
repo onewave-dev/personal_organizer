@@ -133,26 +133,28 @@ def build_digest_text() -> str:
 
     # 3) Формируем текст
     lines = [
-        f"🌅 Доброе утро! Сейчас: {now_str}",
+        "🌅 Доброе утро!",
+        f"Сейчас: {now_str}",
         "",
-        "Ваши события и напоминания."
+        "Ваши события и напоминания.",
+        "",
     ]
 
     today_items = ev_today + ts_today + rem_today
     today_items.sort(key=lambda x: (x["date"], x["time"] or "99:99"))
-    lines.append("Сегодня:")
+    lines.append("❗️Сегодня:")
     for it in today_items:
         lines.append(_fmt_unified(it["date"], it["title"], it["time"]))
     lines.append("")
     week_items = ev_week + ts_week + rem_week
     week_items.sort(key=lambda x: (x["date"], x["time"] or "99:99"))
-    lines.append("В ближайшую неделю:")
+    lines.append("🗓 В ближайшую неделю:")
     for it in week_items:
         lines.append(_fmt_unified(it["date"], it["title"], it["time"]))
     lines.append("")
     month_items = ev_month + ts_month + rem_month
     month_items.sort(key=lambda x: (x["date"], x["time"] or "99:99"))
-    lines.append("В ближайший месяц:")
+    lines.append("🗓 В ближайший месяц:")
     for it in month_items:
         lines.append(_fmt_unified(it["date"], it["title"], it["time"]))
 
