@@ -184,6 +184,7 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 4) Отправка дайджеста
 async def send_morning_digest(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.data["chat_id"]
+    print(f"[digest] sending to {chat_id}") # лог
     digest_text = build_digest_text()
     await context.bot.send_message(chat_id=chat_id, text=digest_text)
 
@@ -420,8 +421,10 @@ async def on_settings_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
             t = _shift_time(t, +10)
             context.user_data["edit_time"] = t
         elif action == "save":
-            storage.set_daily_time(t)
+            storage.set_daily_time(f"{t.hour:02d}:{t.minute:02d}")
             context.user_data.pop("edit_time", None)
+            chat_id = update.callback_query.message.chat_id
+            register_daily_job(context, chat_id)
         await query.answer("Сохранено" if action == "save" else "")
         await query.edit_message_text(
             f"⏰ Время дайджеста: {_fmt_time(t)} ({TZ.key})",

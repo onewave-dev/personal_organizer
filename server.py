@@ -2,6 +2,8 @@ import os
 from fastapi import FastAPI, Request, Header, HTTPException
 from dotenv import load_dotenv
 from telegram import Update
+from datetime import time as _t
+import storage
 
 from app import build_telegram_application   # фабрика из app.py
 
@@ -21,10 +23,27 @@ tg_app = build_telegram_application()
 
 @fastapi_app.on_event("startup")
 async def _on_startup():
-    # Инициализируем и запускаем PTB-приложение (JobQueue, хэндлеры)
     await tg_app.initialize()
     await tg_app.start()
-    # Регистрацию вебхука делаем вручную через /set_webhook, чтобы явно контролировать URL.
+    try:
+        chat_id = storage.get_chat_id()
+        if chat_id:
+            base_t = storage.get_daily_time()
+            t_with_tz = _t(
+                base_t.hour,
+                base_t.minute,
+                tzinfo=tg_app.bot.defaults.tzinfo if tg_app.bot.defaults else None
+            )
+            tg_app.job_queue.run_daily(
+                callback=lambda ctx: ctx.bot.send_message(
+                    chat_id=chat_id, text=build_digest_text()
+                ),
+                time=t_with_tz,
+                name=f"morning_digest_{chat_id}",
+                data={"chat_id": chat_id},
+            )
+    except Exception:
+        pass
 
 @fastapi_app.on_event("shutdown")
 async def _on_shutdown():
