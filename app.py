@@ -481,8 +481,8 @@ async def on_settings_menu(query, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
 
     # Если пришли ИЗ главного меню — разово пришлём копию дайджеста без кнопок
-    if context.user_data.get("at_root", False):
-        await show_digest_copy(context, chat_id, uid, with_menu=False)
+    # if context.user_data.get("at_root", False):
+    #     await show_digest_copy(context, chat_id, uid, with_menu=False)
     # Мы уже НЕ в корне
     context.user_data["at_root"] = False
 
