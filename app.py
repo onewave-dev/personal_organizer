@@ -572,45 +572,55 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Ветвь напоминаний
     if data == "rem:add:start":
         await query.answer()
-        uid = query.from_user.id if query.from_user else None
+        uid = query.from_user.id
         chat_id = query.message.chat_id
 
-        # Если выходим из главного меню — покажем копию дайджеста (без меню)
         if context.user_data.get("at_root", False):
             await show_digest_copy(context, chat_id, uid, with_menu=False)
         context.user_data["at_root"] = False
 
-        context.user_data["awaiting_reminder"] = True
         await context.bot.send_message(
             chat_id=chat_id,
             text=("Отправь одно сообщение с напоминанием:\n"
                 "• Просто текст\n"
                 "• Или: Текст DD-MM-YYYY (например, 07-11-2025)\n\n"
                 "После отправки вернёшься в меню."),
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Назад", callback_data="menu:root")]
-            ])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="menu:root")]])
         )
         return
+
 
     if data == "rem:edit:start":
         await query.answer()
         uid = query.from_user.id
         chat_id = query.message.chat_id
 
-        # Если выходим из главного меню — покажем копию дайджеста (без меню)
+        # если пришли из корня — показать копию дайджеста (без меню)
         if context.user_data.get("at_root", False):
             await show_digest_copy(context, chat_id, uid, with_menu=False)
         context.user_data["at_root"] = False
 
+        # ОБЯЗАТЕЛЬНО: получить список прежде чем проверять
         items = storage.list_user_reminders(uid)
-    if not items:
+
+        if not items:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="У тебя пока нет собственных напоминаний.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="menu:root")]])
+            )
+            return
+
+        buttons = [[InlineKeyboardButton(r.get("text","(без текста)"),
+                                        callback_data=f"editrem:{i}")]
+                for i, r in enumerate(items)]
         await context.bot.send_message(
             chat_id=chat_id,
-            text="У тебя пока нет собственных напоминаний.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="menu:root")]])
+            text="Выбери напоминание:",
+            reply_markup=InlineKeyboardMarkup(buttons + [[InlineKeyboardButton("⬅️ Назад", callback_data="menu:root")]])
         )
         return
+       
 
     buttons = [[InlineKeyboardButton(r["text"], callback_data=f"editrem:{i}")]
             for i, r in enumerate(items)]
