@@ -174,6 +174,8 @@ async def show_digest_copy(
     """
     text = context.bot_data.get("last_digest_text")
     if not text:
+        text, _ = storage.get_last_digest()
+    if not text:
         await context.bot.send_message(
             chat_id=chat_id,
             text="Пока нет свежего дайджеста.\nНажми «↻ Обновить» или используй /testdigest.",
@@ -194,6 +196,7 @@ async def rebuild_and_show_digest(
 ):
     digest_text = build_digest_text()
     context.bot_data["last_digest_text"] = digest_text
+    storage.set_last_digest(digest_text)
     reply_markup = build_main_menu(user_id) if with_menu else None
     await context.bot.send_message(chat_id=chat_id, text=digest_text, reply_markup=reply_markup)
 
@@ -230,6 +233,7 @@ async def send_morning_digest(context: ContextTypes.DEFAULT_TYPE):
     print(f"[digest] sending to {chat_id}") # лог
     digest_text = build_digest_text()
     context.bot_data["last_digest_text"] = digest_text
+    storage.set_last_digest(digest_text)
     await context.bot.send_message(chat_id=chat_id, text=digest_text)
 
 
@@ -243,6 +247,7 @@ async def cmd_testdigest(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 2) Сохранить как «последний дайджест» для показа копии в других местах
     context.bot_data["last_digest_text"] = digest_text
+    storage.set_last_digest(digest_text)
 
     # 3) Отправить сообщение с дайджестом + главное меню под ним
     await update.message.reply_text(
@@ -314,7 +319,7 @@ async def cmd_start_and_schedule(update: Update, context: ContextTypes.DEFAULT_T
 
     digest_text = build_digest_text()
     context.bot_data["last_digest_text"] = digest_text
-
+    storage.set_last_digest(digest_text)
     try:
         register_daily_job(context, cid)
     except RuntimeError:
