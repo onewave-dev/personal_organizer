@@ -5,6 +5,7 @@ import unicodedata
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, ContextTypes, CommandHandler, JobQueue, CallbackQueryHandler, MessageHandler, filters
+from telegram.error import BadRequest
 
 # время и часовой пояс
 from datetime import time as _t, datetime as _dt, timedelta as _td
@@ -182,6 +183,7 @@ async def show_digest_copy(
     reply_markup = build_main_menu(user_id) if with_menu else None
     await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
 
+# --- ХЭЛПЕРЫ ---
 #хэлпер - Строит НОВЫЙ дайджест, обновляет кэш и отправляет его сообщением
 
 async def rebuild_and_show_digest(
@@ -195,6 +197,29 @@ async def rebuild_and_show_digest(
     reply_markup = build_main_menu(user_id) if with_menu else None
     await context.bot.send_message(chat_id=chat_id, text=digest_text, reply_markup=reply_markup)
 
+async def safe_edit(query, text: str, reply_markup=None):
+    """Аккуратно правит сообщение, игнорируя 'Message is not modified'."""
+    try:
+        # Предварительная проверка на идентичность
+        same_text = (query.message and (query.message.text or "") == (text or ""))
+        same_kb = False
+        if reply_markup or query.message.reply_markup:
+            a = reply_markup.to_dict() if reply_markup else None
+            b = query.message.reply_markup.to_dict() if query.message.reply_markup else None
+            same_kb = (a == b)
+        else:
+            same_kb = True  # обе None
+
+        if same_text and same_kb:
+            await query.answer("Уже актуально")
+            return
+
+        await query.edit_message_text(text=text, reply_markup=reply_markup)
+    except BadRequest as e:
+        if "Message is not modified" in str(e):
+            await query.answer("Уже актуально")
+            return
+        raise
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Тест ок ✅")
@@ -443,7 +468,7 @@ async def on_main_menu(query, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["at_root"] = True
         return
 
-    await query.edit_message_text(text=text, reply_markup=build_main_menu(uid))
+    await safe_edit(query, text, build_main_menu(uid))
     context.user_data["at_root"] = True
 
 async def on_settings_menu(query, context: ContextTypes.DEFAULT_TYPE):
@@ -646,7 +671,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Обновляю...")
         digest_text = build_digest_text()
         context.bot_data["last_digest_text"] = digest_text
-        await query.edit_message_text(digest_text, reply_markup=build_main_menu(query.from_user.id))
+        await safe_edit(query, digest_text, build_main_menu(query.from_user.id))
         context.user_data["at_root"] = True
         return
     
