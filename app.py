@@ -167,13 +167,17 @@ async def show_digest_copy(
     with_menu: bool = False,   # ← по умолчанию БЕЗ кнопок
 ):
     """
-    Выводит копию последнего дайджеста.
+    Выводит копию последнего дайджеста из кэша.
     Если with_menu=True — добавляет главное меню под дайджестом (только для главного экрана).
+    ⚠️ Не строит новый дайджест — если кэш пуст, показывает подсказку обновить вручную.
     """
     text = context.bot_data.get("last_digest_text")
     if not text:
-        text = build_digest_text()
-        context.bot_data["last_digest_text"] = text
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Пока нет свежего дайджеста.\nНажми «↻ Обновить» или используй /testdigest.",
+        )
+        return
 
     reply_markup = build_main_menu(user_id) if with_menu else None
     await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
@@ -207,7 +211,7 @@ async def cmd_testdigest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         digest_text,
         reply_markup=build_main_menu(uid),
     )
-
+    context.user_data["at_root"] = True
 
 # 5.1) Команда для установки времени дайджеста
 async def cmd_settime(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -283,6 +287,7 @@ async def cmd_start_and_schedule(update: Update, context: ContextTypes.DEFAULT_T
         digest_text,
         reply_markup=build_main_menu(uid),
     )
+    context.user_data["at_root"] = True
 
 ## добавление кастомного напоминания
 
@@ -417,21 +422,32 @@ async def on_main_menu(query, context: ContextTypes.DEFAULT_TYPE):
 
     text = context.bot_data.get("last_digest_text")
     if not text:
-        text = build_digest_text()
-        context.bot_data["last_digest_text"] = text
+        await query.edit_message_text(
+            text="(Пока нет свежего дайджеста — нажми «↻ Обновить» или /testdigest)",
+            reply_markup=build_main_menu(uid),
+        )
+        context.user_data["at_root"] = True
+        return
 
-    await query.edit_message_text(
-        text=text,
-        reply_markup=build_main_menu(uid)
-    )
+    await query.edit_message_text(text=text, reply_markup=build_main_menu(uid))
+    context.user_data["at_root"] = True
 
 async def on_settings_menu(query, context: ContextTypes.DEFAULT_TYPE):
     uid = query.from_user.id if query.from_user else None
+    chat_id = query.message.chat_id
+
+    # Если пришли ИЗ главного меню — разово пришлём копию дайджеста без кнопок
+    if context.user_data.get("at_root", False):
+        await show_digest_copy(context, chat_id, uid, with_menu=False)
+    # Мы уже НЕ в корне
+    context.user_data["at_root"] = False
+
     await query.answer()
     await query.edit_message_text(
         text="⚙️ Настройки:",
         reply_markup=build_settings_menu(uid)
     )
+
 
 async def on_settings_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -508,6 +524,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "menu:settings":
         return await on_settings_menu(query, context)
+
     
     # Маршрутизация всех кликов настроек в on_settings_action
     if data.startswith("settings:"):
@@ -516,8 +533,15 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Ветвь напоминаний
     if data == "rem:add:start":
         await query.answer()
-        context.user_data["awaiting_reminder"] = True
+        uid = query.from_user.id if query.from_user else None
+        chat_id = query.message.chat_id
 
+        # Если выходим из главного меню — покажем копию дайджеста (без меню)
+        if context.user_data.get("at_root", False):
+            await show_digest_copy(context, chat_id, uid, with_menu=False)
+        context.user_data["at_root"] = False
+
+        context.user_data["awaiting_reminder"] = True
         return await query.edit_message_text(
             text=("Отправь одно сообщение с напоминанием:\n"
                 "• Просто текст\n"
@@ -531,8 +555,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "rem:edit:start":
         await query.answer()
         uid = query.from_user.id
-        items = storage.list_user_reminders(uid)
+        chat_id = query.message.chat_id
 
+        # Если выходим из главного меню — покажем копию дайджеста (без меню)
+        if context.user_data.get("at_root", False):
+            await show_digest_copy(context, chat_id, uid, with_menu=False)
+        context.user_data["at_root"] = False
+
+        items = storage.list_user_reminders(uid)
         if not items:
             return await query.edit_message_text(
                 text="У тебя пока нет собственных напоминаний.",
@@ -597,6 +627,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         digest_text = build_digest_text()
         context.bot_data["last_digest_text"] = digest_text
         await query.edit_message_text(digest_text, reply_markup=build_main_menu(query.from_user.id))
+        context.user_data["at_root"] = True
         return
     
 async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
