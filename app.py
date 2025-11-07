@@ -414,8 +414,16 @@ async def cmd_clearreminders(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def on_main_menu(query, context: ContextTypes.DEFAULT_TYPE):
     uid = query.from_user.id if query.from_user else None
-    chat_id = query.message.chat_id
-    await show_digest_copy(context, chat_id, uid, with_menu=True)  
+
+    text = context.bot_data.get("last_digest_text")
+    if not text:
+        text = build_digest_text()
+        context.bot_data["last_digest_text"] = text
+
+    await query.edit_message_text(
+        text=text,
+        reply_markup=build_main_menu(uid)
+    )
 
 async def on_settings_menu(query, context: ContextTypes.DEFAULT_TYPE):
     uid = query.from_user.id if query.from_user else None
@@ -508,13 +516,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Ветвь напоминаний
     if data == "rem:add:start":
         await query.answer()
-        uid = query.from_user.id if query.from_user else None
-        chat_id = query.message.chat_id
         context.user_data["awaiting_reminder"] = True
 
-        await show_digest_copy(context, chat_id, uid, with_menu=False)
-        return await context.bot.send_message(
-            chat_id=chat_id,
+        return await query.edit_message_text(
             text=("Отправь одно сообщение с напоминанием:\n"
                 "• Просто текст\n"
                 "• Или: Текст DD-MM-YYYY (например, 07-11-2025)\n\n"
@@ -523,38 +527,35 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("⬅️ Назад", callback_data="menu:root")]
             ])
         )
-    
+
     if data == "rem:edit:start":
         await query.answer()
         uid = query.from_user.id
-        chat_id = query.message.chat_id
         items = storage.list_user_reminders(uid)
+
         if not items:
-            await show_digest_copy(context, chat_id, uid, with_menu=False)
-            return await context.bot.send_message(
-                chat_id=chat_id,
+            return await query.edit_message_text(
                 text="У тебя пока нет собственных напоминаний.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="menu:root")]])
             )
 
         buttons = [[InlineKeyboardButton(r["text"], callback_data=f"editrem:{i}")]
                 for i, r in enumerate(items)]
-        await show_digest_copy(context, chat_id, uid, with_menu=False)
-        return await context.bot.send_message(
-            chat_id=chat_id,
+        return await query.edit_message_text(
             text="Выбери напоминание:",
             reply_markup=InlineKeyboardMarkup(buttons + [[InlineKeyboardButton("⬅️ Назад", callback_data="menu:root")]])
         )
+
+
     # обработка выбора конкретного напоминания для редактирования
     if data.startswith("editrem:"):
         await query.answer()
         uid = query.from_user.id
-        chat_id = query.message.chat_id
         idx = int(data.split(":")[1])
         items = storage.list_user_reminders(uid)
+
         if idx < 0 or idx >= len(items):
-            await show_digest_copy(context, chat_id, uid, with_menu=False)
-            return await context.bot.send_message(chat_id=chat_id, text="Неверный выбор.")
+            return await query.edit_message_text(text="Неверный выбор.")
 
         r = items[idx]
         kb = [
@@ -562,21 +563,21 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("❌ Удалить",       callback_data=f"editrem_del:{idx}")],
             [InlineKeyboardButton("⬅️ Назад", callback_data="rem:edit:start")]
         ]
-        await show_digest_copy(context, chat_id, uid, with_menu=False)
-        return await context.bot.send_message(
-            chat_id=chat_id,
+        return await query.edit_message_text(
             text=f"«{r.get('text','')}» ({r.get('due','без даты')})",
             reply_markup=InlineKeyboardMarkup(kb)
         )
+
 
     # удаление кастомного напоминания из UI
     if data.startswith("editrem_del:"):
         await query.answer()
         uid = query.from_user.id
-        chat_id = query.message.chat_id
         ok = storage.delete_user_reminder(uid, int(data.split(":")[1]))
-        await show_digest_copy(context, chat_id, uid, with_menu=False)
-        return await context.bot.send_message(chat_id=chat_id, text=("Удалено." if ok else "Не удалось удалить."))
+        return await query.edit_message_text(
+            text=("Удалено." if ok else "Не удалось удалить."),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="rem:edit:start")]])
+        )
 
     
     # Редактирование своего напоминания
@@ -584,12 +585,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         idx = int(data.split(":")[1])
         context.user_data["editing_idx"] = idx
-        await show_digest_copy(context, chat_id, uid, with_menu=False)
-        return await context.bot.send_message(
-            chat_id=query.message.chat_id,
-            text=("Отправь новый текст (и при желании дату: DD-MM-YYYY) одним сообщением."),
+        return await query.edit_message_text(
+            text="Отправь новый текст (и при желании дату: DD-MM-YYYY) одним сообщением.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="rem:edit:start")]])
         )
+
 
     # Обновление дайджеста
     if data == "refresh_digest":
@@ -709,10 +709,8 @@ def main():
     app.add_handler(CommandHandler("addreminder", cmd_addreminder))
     app.add_handler(CommandHandler("list", cmd_list))
     app.add_handler(CommandHandler("clearreminders", cmd_clearreminders))
-
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text_message))
-
 
     # 5) Запускаем long polling
     app.run_polling(allowed_updates=Update.ALL_TYPES)
