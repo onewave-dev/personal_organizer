@@ -5,7 +5,7 @@ from telegram import Update
 from datetime import time as _t
 import storage
 
-from app import build_telegram_application   # фабрика из app.py
+from app import build_telegram_application, build_digest_text
 
 load_dotenv()
 
