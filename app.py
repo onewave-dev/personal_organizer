@@ -34,9 +34,12 @@ def is_admin(user_id: int | None) -> bool:
 
 def build_main_menu(user_id: int | None) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton("🧷 Напоминания", callback_data="menu:reminders"),
-         InlineKeyboardButton("⚙️ Настройки",   callback_data="menu:settings")],
+        [InlineKeyboardButton("↻ Обновить", callback_data="refresh_digest")],
+        [InlineKeyboardButton("➕ Добавить своё напоминание", callback_data="rem:add:start")],
+        [InlineKeyboardButton("✏️ Изменить свои напоминания", callback_data="rem:edit:start")],
     ]
+    if is_admin(user_id):
+        rows.append([InlineKeyboardButton("⚙️ Настройки", callback_data="menu:settings")])
     return InlineKeyboardMarkup(rows)
 
 def build_settings_menu(user_id: int | None) -> InlineKeyboardMarkup:
@@ -47,13 +50,6 @@ def build_settings_menu(user_id: int | None) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton("[адм.]", callback_data="settings:admin")])
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="menu:root")])
     return InlineKeyboardMarkup(rows)
-
-def build_reminders_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Добавить свое напоминание",        callback_data="rem:add:start")],
-        [InlineKeyboardButton("✏️ Изменить свои напоминания ",       callback_data="rem:edit:start")],
-        [InlineKeyboardButton("⬅️ Назад",          callback_data="menu:root")],
-    ])
 
 def build_time_menu(current_time_str: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -161,6 +157,19 @@ def build_digest_text() -> str:
 
     return "\n".join(lines)
 
+# копия дайджеста для повторных выводов
+
+async def show_digest_copy(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int | None):
+    """
+    Гарантированно выводит (без обновления календарей) последнюю сохранённую копию дайджеста
+    с ГЛАВНЫМ МЕНЮ. Если копии нет — один раз сгенерируем и запомним.
+    """
+    text = context.bot_data.get("last_digest_text")
+    if not text:
+        text = build_digest_text()
+        context.bot_data["last_digest_text"] = text
+    await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=build_main_menu(user_id))
+
 
 # 2) /start — приветствие и проверка, что бот «живой»
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -186,27 +195,40 @@ async def send_morning_digest(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.data["chat_id"]
     print(f"[digest] sending to {chat_id}") # лог
     digest_text = build_digest_text()
+    context.bot_data["last_digest_text"] = digest_text
     await context.bot.send_message(chat_id=chat_id, text=digest_text)
 
 
 # 5) Команда для мгновенной проверки дайджеста
 async def cmd_testdigest(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Запускаем ту же функцию, но без JobQueue
-    dummy_context = type("C", (), {})()
-    dummy_context.bot = context.bot
-    dummy_context.job = type("J", (), {"data": {"chat_id": update.effective_chat.id}})()
-    await send_morning_digest(dummy_context)
+    """Прислать свежий дайджест по команде /testdigest."""
+    uid = update.effective_user.id if update.effective_user else None
+
+    # 1) Сгенерировать НОВЫЙ дайджест (подтянуть актуальные данные из календарей/тасков)
+    digest_text = build_digest_text()
+
+    # 2) Сохранить как «последний дайджест» для показа копии в других местах
+    context.bot_data["last_digest_text"] = digest_text
+
+    # 3) Отправить сообщение с дайджестом + главное меню под ним
+    await update.message.reply_text(
+        digest_text,
+        reply_markup=build_main_menu(uid),
+    )
+
 
 # 5.1) Команда для установки времени дайджеста
 async def cmd_settime(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Установить ежедневное время рассылки: /settime 07:45"""
     if not context.args:
+        await show_digest_copy(context, update.effective_chat.id, update.effective_user.id)
         await update.message.reply_text("Укажи время: /settime HH:MM (например, 07:45)")
         return
     raw = context.args[0].strip()
     try:
         storage.set_daily_time(raw)
     except Exception:
+        await show_digest_copy(context, update.effective_chat.id, update.effective_user.id)
         await update.message.reply_text("Неверный формат. Используй HH:MM (00–23:59).")
         return
 
@@ -221,6 +243,7 @@ async def cmd_settime(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_when(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать текущее время рассылки"""
     t = storage.get_daily_time()
+    await show_digest_copy(context, update.effective_chat.id, update.effective_user.id)
     await update.message.reply_text(f"Текущее время рассылки: {t.strftime('%H:%M')} ({TZ_NAME}).")
 
 # 6) Регистрация ежедневной задачи
@@ -251,15 +274,23 @@ def register_daily_job(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
 # как ты напишешь боту /start (чтобы знать твой chat_id).
 # Перехватим /start как триггер регистрации job
 async def cmd_start_and_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await cmd_start(update, context)
     cid = update.effective_chat.id
     storage.set_chat_id(cid)
+    uid = update.effective_user.id if update.effective_user else None
+
+    digest_text = build_digest_text()
+    context.bot_data["last_digest_text"] = digest_text
+
     try:
         register_daily_job(context, cid)
     except RuntimeError:
-        # если очередь ещё не готова — подождём чуть-чуть и попробуем снова
         await asyncio.sleep(0.5)
         register_daily_job(context, cid)
+
+    await update.message.reply_text(
+        digest_text,
+        reply_markup=build_main_menu(uid),
+    )
 
 ## добавление кастомного напоминания
 
@@ -356,6 +387,7 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     items = storage.list_custom_reminders()
     if not items:
+        await show_digest_copy(context, update.effective_chat.id, update.effective_user.id)
         await update.message.reply_text("Пока нет пользовательских напоминаний.")
         return
 
@@ -377,23 +409,27 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             # поддержка старого формата (строк)
             lines.append(f"• {str(it)}")
-
+    await show_digest_copy(context, update.effective_chat.id, update.effective_user.id)
     await update.message.reply_text("\n".join(lines))
 
 # очистка списка
 async def cmd_clearreminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     storage.clear_custom_reminders()
+    await show_digest_copy(context, update.effective_chat.id, update.effective_user.id)
     await update.message.reply_text("Список напоминаний очищен.")
 
 # Обработка кнопок 
 
 async def on_main_menu(query, context: ContextTypes.DEFAULT_TYPE):
     uid = query.from_user.id if query.from_user else None
-    await query.edit_message_text("Главное меню:", reply_markup=build_main_menu(uid))
+    chat_id = query.message.chat_id
+    await show_digest_copy(context, chat_id, uid)
 
 async def on_settings_menu(query, context: ContextTypes.DEFAULT_TYPE):
     uid = query.from_user.id if query.from_user else None
-    await query.edit_message_text("⚙️ Настройки:", reply_markup=build_settings_menu(uid))
+    chat_id = query.message.chat_id
+    await show_digest_copy(context, chat_id, uid)
+    await context.bot.send_message(chat_id=chat_id, text="⚙️ Настройки:", reply_markup=build_settings_menu(uid))
 
 
 async def on_settings_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -405,8 +441,11 @@ async def on_settings_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
         t = storage.get_daily_time()
         context.user_data["edit_time"] = t
         await query.answer()
-        await query.edit_message_text(
-            f"⏰ Время дайджеста: {_fmt_time(t)} ({TZ.key})",
+        # ⬇️ добавь это
+        await show_digest_copy(context, query.message.chat_id, uid)
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=f"⏰ Время дайджеста: {_fmt_time(t)} ({TZ.key})",
             reply_markup=build_time_menu(_fmt_time(t)),
         )
         return
@@ -426,8 +465,11 @@ async def on_settings_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
             chat_id = update.callback_query.message.chat_id
             register_daily_job(context, chat_id)
         await query.answer("Сохранено" if action == "save" else "")
-        await query.edit_message_text(
-            f"⏰ Время дайджеста: {_fmt_time(t)} ({TZ.key})",
+        # ⬇️ добавь это
+        await show_digest_copy(context, query.message.chat_id, uid)
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=f"⏰ Время дайджеста: {_fmt_time(t)} ({TZ.key})",
             reply_markup=build_time_menu(_fmt_time(t)),
         )
         return
@@ -437,11 +479,14 @@ async def on_settings_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await query.answer("Недостаточно прав", show_alert=True)
             return
         await query.answer()
-        await query.edit_message_text(
-            "🔒 Админ-меню\n\n"
-            "Тестовые команды:\n"
-            "• /test — проверить, что бот жив\n"
-            "• /testdigest — прислать утренний дайджест сейчас\n",
+        # ⬇️ добавь это
+        await show_digest_copy(context, query.message.chat_id, uid)
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=("🔒 Админ-меню\n\n"
+                "Тестовые команды:\n"
+                "• /test — проверить, что бот жив\n"
+                "• /testdigest — прислать утренний дайджест сейчас\n"),
             reply_markup=build_settings_menu(uid),
         )
         return
@@ -450,21 +495,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data or ""
 
-
-
     if data == "menu:root":
         return await on_main_menu(query, context)
     
     if data == "menu:reminders":
-        await query.answer()
-        chat_id = query.message.chat_id
-        digest_text = build_digest_text()
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=digest_text,
-            reply_markup=build_reminders_menu()
-        )
-        return
+        return await on_main_menu(query, context)
 
     if data == "menu:settings":
         return await on_settings_menu(query, context)
@@ -476,68 +511,91 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Ветвь напоминаний
     if data == "rem:add:start":
         await query.answer()
+        uid = query.from_user.id if query.from_user else None
+        chat_id = query.message.chat_id
         context.user_data["awaiting_reminder"] = True
-        return await query.edit_message_text(
-            "Отправь одно сообщение с напоминанием:\n"
-            "• Просто текст\n"
-            "• Или: Текст DD-MM-YYYY (например, 07-11-2025)\n\n"
-            "После отправки вернёшься в меню.",
+
+        await show_digest_copy(context, chat_id, uid)
+        return await context.bot.send_message(
+            chat_id=chat_id,
+            text=("Отправь одно сообщение с напоминанием:\n"
+                "• Просто текст\n"
+                "• Или: Текст DD-MM-YYYY (например, 07-11-2025)\n\n"
+                "После отправки вернёшься в меню."),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Отмена", callback_data="menu:reminders")]
+                [InlineKeyboardButton("⬅️ Назад", callback_data="menu:root")]
             ])
         )
     
     if data == "rem:edit:start":
         await query.answer()
         uid = query.from_user.id
+        chat_id = query.message.chat_id
         items = storage.list_user_reminders(uid)
         if not items:
-            return await query.edit_message_text(
-                "У тебя пока нет собственных напоминаний.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="menu:reminders")]])
+            return await context.bot.send_message(
+                chat_id=chat_id,
+                text="У тебя пока нет собственных напоминаний.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="menu:root")]])
             )
-        buttons = [[InlineKeyboardButton(r["text"], 
-                    callback_data=f"editrem:{i}") ] for i, r in enumerate(items)]
-        return await query.edit_message_text("Выбери напоминание:", 
-            reply_markup=InlineKeyboardMarkup(buttons + [[InlineKeyboardButton("⬅️ Назад", callback_data="menu:reminders")]]))
-    
+
+        buttons = [[InlineKeyboardButton(r["text"], callback_data=f"editrem:{i}")]
+                for i, r in enumerate(items)]
+        return await context.bot.send_message(
+            chat_id=chat_id,
+            text="Выбери напоминание:",
+            reply_markup=InlineKeyboardMarkup(buttons + [[InlineKeyboardButton("⬅️ Назад", callback_data="menu:root")]])
+        )
     # обработка выбора конкретного напоминания для редактирования
     if data.startswith("editrem:"):
         await query.answer()
         uid = query.from_user.id
+        chat_id = query.message.chat_id
         idx = int(data.split(":")[1])
-        # защита от некорректного индекса.
         items = storage.list_user_reminders(uid)
-        if idx < 0 or idx >= len(items): 
-            return await query.edit_message_text("Неверный выбор.")
-        
-        # показываем карточку с действиями 
+        if idx < 0 or idx >= len(items):
+            return await context.bot.send_message(chat_id=chat_id, text="Неверный выбор.")
+
         r = items[idx]
-        kb = [[InlineKeyboardButton("✏️ Редактировать", callback_data=f"editrem_edit:{idx}"),
+        kb = [
+            [InlineKeyboardButton("✏️ Редактировать", callback_data=f"editrem_edit:{idx}"),
             InlineKeyboardButton("❌ Удалить",       callback_data=f"editrem_del:{idx}")],
-            [InlineKeyboardButton("⬅️ Назад", callback_data="rem:edit:start")]]
-        return await query.edit_message_text(f"«{r.get('text','')}» ({r.get('due','без даты')})", reply_markup=InlineKeyboardMarkup(kb))
+            [InlineKeyboardButton("⬅️ Назад", callback_data="rem:edit:start")]
+        ]
+        return await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"«{r.get('text','')}» ({r.get('due','без даты')})",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
 
     # удаление кастомного напоминания из UI
     if data.startswith("editrem_del:"):
         await query.answer()
         uid = query.from_user.id
-        idx = int(data.split(":")[1])
-        ok = storage.delete_user_reminder(uid, idx)
-        msg = "Удалено." if ok else "Не удалось удалить."
-        await query.edit_message_text(msg)
+        chat_id = query.message.chat_id
+        ok = storage.delete_user_reminder(uid, int(data.split(":")[1]))
+        return await context.bot.send_message(chat_id=chat_id, text=("Удалено." if ok else "Не удалось удалить."))
+
     
     # Редактирование своего напоминания
     if data.startswith("editrem_edit:"):
         await query.answer()
         idx = int(data.split(":")[1])
         context.user_data["editing_idx"] = idx
-        return await query.edit_message_text(
-            "Отправь новый текст (и при желании дату: DD-MM-YYYY) одним сообщением.", 
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", 
-                                                                     callback_data="rem:edit:start")]]))
+        return await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=("Отправь новый текст (и при желании дату: DD-MM-YYYY) одним сообщением."),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="rem:edit:start")]])
+        )
 
-
+    # Обновление дайджеста
+    if data == "refresh_digest":
+        await query.answer("Обновляю...")
+        digest_text = build_digest_text()
+        context.bot_data["last_digest_text"] = digest_text
+        await query.edit_message_text(digest_text, reply_markup=build_main_menu(query.from_user.id))
+        return
+    
 async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.effective_message.text or "").strip()
 
@@ -566,8 +624,17 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
 
         if ok:
-            return await update.effective_message.reply_text("Изменено.", reply_markup=reply_markup)
-        return await update.effective_message.reply_text("Не удалось изменить.", reply_markup=reply_markup)
+            await show_digest_copy(context, update.effective_chat.id, update.effective_user.id)
+            return await update.effective_message.reply_text(
+                "Изменено.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ В главное меню", callback_data="menu:root")]])
+            )
+        else:
+            await show_digest_copy(context, update.effective_chat.id, update.effective_user.id)
+            return await update.effective_message.reply_text(
+                "Не удалось изменить.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ В главное меню", callback_data="menu:root")]])
+            )
 
     if not context.user_data.get("awaiting_reminder"):
         return
@@ -590,11 +657,10 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         storage.add_custom_reminder(text, user_id=update.effective_user.id)
 
     context.user_data["awaiting_reminder"] = False
+    await show_digest_copy(context, update.effective_chat.id, update.effective_user.id)
     await update.effective_message.reply_text(
         "✅ Напоминание добавлено.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ В раздел «Напоминания»", callback_data="menu:reminders")]
-        ])
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ В главное меню", callback_data="menu:root")]])
     )
 
 # для серверного запуска с webhook из server.py
