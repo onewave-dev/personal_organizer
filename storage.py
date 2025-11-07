@@ -10,6 +10,8 @@ DEFAULT_DATA = {
     "chat_id": None,
     "daily_time": "06:30",   # время по умолчанию
     "custom_reminders": [], 
+    "last_digest_text": "",
+    "last_digest_at": None, 
 
 }
 
@@ -223,4 +225,14 @@ def update_user_reminder(user_id: int, index_in_user_list: int, *, new_text: str
     data["custom_reminders"] = all_items
     _save(data)
     return True
+
+def set_last_digest(text: str) -> None:
+    data = _load()
+    data["last_digest_text"] = text or ""
+    data["last_digest_at"] = datetime.utcnow().isoformat() + "Z"
+    _save(data)
+
+def get_last_digest() -> tuple[str, str | None]:
+    d = _load()
+    return d.get("last_digest_text") or "", d.get("last_digest_at")
 
