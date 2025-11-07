@@ -182,6 +182,19 @@ async def show_digest_copy(
     reply_markup = build_main_menu(user_id) if with_menu else None
     await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
 
+#хэлпер - Строит НОВЫЙ дайджест, обновляет кэш и отправляет его сообщением
+
+async def rebuild_and_show_digest(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    user_id: int | None,
+    with_menu: bool = True,
+):
+    digest_text = build_digest_text()
+    context.bot_data["last_digest_text"] = digest_text
+    reply_markup = build_main_menu(user_id) if with_menu else None
+    await context.bot.send_message(chat_id=chat_id, text=digest_text, reply_markup=reply_markup)
+
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Тест ок ✅")
@@ -373,7 +386,8 @@ async def cmd_addreminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
         await update.message.reply_text(f"Добавил напоминание: {text}")
-
+    # Сразу обновим дайджест
+    await rebuild_and_show_digest(context, update.effective_chat.id, update.effective_user.id, with_menu=True)
 
 # просмотр напоминаний
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -412,7 +426,7 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # очистка списка
 async def cmd_clearreminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     storage.clear_custom_reminders()
-    await show_digest_copy(context, update.effective_chat.id, update.effective_user.id)
+    await rebuild_and_show_digest(context, update.effective_chat.id, update.effective_user.id, with_menu=True)
     await update.message.reply_text("Список напоминаний очищен.")
 
 # Обработка кнопок 
@@ -604,10 +618,16 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         uid = query.from_user.id
         ok = storage.delete_user_reminder(uid, int(data.split(":")[1]))
+        # После удаления сразу перестроим дайджест 
+        await rebuild_and_show_digest(context, 
+                                      chat_id=query.message.chat_id, 
+                                      user_id=uid, with_menu=True)
+
         return await query.edit_message_text(
             text=("Удалено." if ok else "Не удалось удалить."),
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="rem:edit:start")]])
         )
+
 
     
     # Редактирование своего напоминания
@@ -658,12 +678,13 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
 
         if ok:
-            await show_digest_copy(context, update.effective_chat.id, update.effective_user.id)
+            await rebuild_and_show_digest(context, update.effective_chat.id, update.effective_user.id, with_menu=True)
             return await update.effective_message.reply_text(
                 "Изменено.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ В главное меню", callback_data="menu:root")]])
             )
         else:
+            # при неудаче копию можно оставить как есть
             await show_digest_copy(context, update.effective_chat.id, update.effective_user.id)
             return await update.effective_message.reply_text(
                 "Не удалось изменить.",
@@ -691,7 +712,7 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         storage.add_custom_reminder(text, user_id=update.effective_user.id)
 
     context.user_data["awaiting_reminder"] = False
-    await show_digest_copy(context, update.effective_chat.id, update.effective_user.id)
+    await rebuild_and_show_digest(context, update.effective_chat.id, update.effective_user.id, with_menu=True)
     await update.effective_message.reply_text(
         "✅ Напоминание добавлено.",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ В главное меню", callback_data="menu:root")]])
