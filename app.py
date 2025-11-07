@@ -636,22 +636,41 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("editrem:"):
         await query.answer()
         uid = query.from_user.id
-        idx = int(data.split(":")[1])
+        chat_id = query.message.chat_id
+
+        # получить индекс выбранного напоминания
+        try:
+            idx = int(data.split(":")[1])
+        except (ValueError, IndexError):
+            return await query.answer("Ошибка: неверный индекс", show_alert=True)
+
+        # ✅ загрузить список перед использованием
         items = storage.list_user_reminders(uid)
 
         if idx < 0 or idx >= len(items):
-            return await query.edit_message_text(text="Неверный выбор.")
+            return await query.answer("Напоминание не найдено", show_alert=True)
 
-        r = items[idx]
-        kb = [
-            [InlineKeyboardButton("✏️ Редактировать", callback_data=f"editrem_edit:{idx}"),
-            InlineKeyboardButton("❌ Удалить",       callback_data=f"editrem_del:{idx}")],
-            [InlineKeyboardButton("⬅️ Назад", callback_data="rem:edit:start")]
-        ]
-        return await query.edit_message_text(
-            text=f"«{r.get('text','')}» ({r.get('due','без даты')})",
-            reply_markup=InlineKeyboardMarkup(kb)
+        rem = items[idx]
+        text = rem.get("text", "(без текста)")
+        due = rem.get("due")
+        if due:
+            text += f" ({due})"
+
+        # сохранить индекс, чтобы потом понимать, что редактируем именно это напоминание
+        context.user_data["editing_idx"] = idx
+
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(f"Ты выбрал напоминание:\n\n{text}\n\n"
+                "Отправь новое напоминание в формате:\n"
+                "• Просто текст\n"
+                "• Или: Текст DD-MM-YYYY"),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🗑 Удалить", callback_data=f"editremdel:{idx}")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="rem:edit:start")]
+            ])
         )
+        return
 
 
     # удаление кастомного напоминания из UI
