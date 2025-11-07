@@ -581,7 +581,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["at_root"] = False
 
         context.user_data["awaiting_reminder"] = True
-        return await query.edit_message_text(
+        await context.bot.send_message(
+            chat_id=chat_id,
             text=("Отправь одно сообщение с напоминанием:\n"
                 "• Просто текст\n"
                 "• Или: Текст DD-MM-YYYY (например, 07-11-2025)\n\n"
@@ -590,6 +591,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("⬅️ Назад", callback_data="menu:root")]
             ])
         )
+        return
 
     if data == "rem:edit:start":
         await query.answer()
@@ -602,18 +604,22 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["at_root"] = False
 
         items = storage.list_user_reminders(uid)
-        if not items:
-            return await query.edit_message_text(
-                text="У тебя пока нет собственных напоминаний.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="menu:root")]])
-            )
-
-        buttons = [[InlineKeyboardButton(r["text"], callback_data=f"editrem:{i}")]
-                for i, r in enumerate(items)]
-        return await query.edit_message_text(
-            text="Выбери напоминание:",
-            reply_markup=InlineKeyboardMarkup(buttons + [[InlineKeyboardButton("⬅️ Назад", callback_data="menu:root")]])
+    if not items:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="У тебя пока нет собственных напоминаний.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="menu:root")]])
         )
+        return
+
+    buttons = [[InlineKeyboardButton(r["text"], callback_data=f"editrem:{i}")]
+            for i, r in enumerate(items)]
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="Выбери напоминание:",
+        reply_markup=InlineKeyboardMarkup(buttons + [[InlineKeyboardButton("⬅️ Назад", callback_data="menu:root")]])
+    )
+    return
 
 
     # обработка выбора конкретного напоминания для редактирования
