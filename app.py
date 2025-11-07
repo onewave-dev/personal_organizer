@@ -55,6 +55,8 @@ def build_time_menu(current_time_str: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("−10 мин", callback_data="settings:time:-10"),
          InlineKeyboardButton("+10 мин", callback_data="settings:time:+10")],
+        [InlineKeyboardButton("−1 час", callback_data="settings:time:-60"),
+         InlineKeyboardButton("+1 час", callback_data="settings:time:+60")],
         [InlineKeyboardButton("✅ Сохранить", callback_data="settings:time:save")],
         [InlineKeyboardButton("⬅️ Назад", callback_data="menu:settings")],
     ])
@@ -440,18 +442,6 @@ async def on_settings_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return
 
-    if data.startswith("editrem_edit:"):
-        await query.answer()
-        uid = query.from_user.id                      
-        chat_id = query.message.chat_id              
-        idx = int(data.split(":")[1])
-        context.user_data["editing_idx"] = idx
-        await show_digest_copy(context, chat_id, uid, with_menu=False)
-        return await context.bot.send_message(
-            chat_id=chat_id,
-            text=("Отправь новый текст (и при желании дату: DD-MM-YYYY) одним сообщением."),
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="rem:edit:start")]])
-        )
 
     if data == "settings:admin":
         if not is_admin(uid):
@@ -469,6 +459,28 @@ async def on_settings_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_markup=build_settings_menu(uid),
         )
         return
+
+    # кнопки корректировки времени: −10/+10 мин, −1/+1 час и Сохранить
+    if data.startswith("settings:time:"):
+        action = data.split(":")[2]  # "-10" | "+10" | "-60" | "+60" | "save"
+        t = context.user_data.get("edit_time", storage.get_daily_time())
+
+        if action == "-10":
+            t = _shift_time(t, -10);  context.user_data["edit_time"] = t
+        elif action == "+10":
+            t = _shift_time(t, +10);  context.user_data["edit_time"] = t
+        elif action == "-60":
+            t = _shift_time(t, -60);  context.user_data["edit_time"] = t
+        elif action == "+60":
+            t = _shift_time(t, +60);  context.user_data["edit_time"] = t
+        elif action == "save":
+            storage.set_daily_time(t)
+            context.user_data.pop("edit_time", None)
+
+        await query.answer("Сохранено" if action == "save" else "")
+        await show_digest_copy(context, query.message.chat_id, uid, with_menu=False)
+        await context.bot.send_message_
+
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
