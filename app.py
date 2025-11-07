@@ -419,67 +419,73 @@ async def on_main_menu(query, context: ContextTypes.DEFAULT_TYPE):
 
 async def on_settings_menu(query, context: ContextTypes.DEFAULT_TYPE):
     uid = query.from_user.id if query.from_user else None
-    chat_id = query.message.chat_id
-    await show_digest_copy(context, chat_id, uid, with_menu=False)
-    await context.bot.send_message(chat_id=chat_id, text="⚙️ Настройки:", reply_markup=build_settings_menu(uid))
-
+    await query.answer()
+    await query.edit_message_text(
+        text="⚙️ Настройки:",
+        reply_markup=build_settings_menu(uid)
+    )
 
 async def on_settings_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    data = query.data
+    data = query.data or ""
     uid = query.from_user.id if query.from_user else None
+    chat_id = query.message.chat_id
 
-    if data == "settings:settime" or data == "settings:time":
+    # вход на экран выбора времени
+    if data in ("settings:settime", "settings:time"):
         t = storage.get_daily_time()
         context.user_data["edit_time"] = t
         await query.answer()
-        # ⬇️ добавь это
-        await show_digest_copy(context, query.message.chat_id, uid, with_menu=False)
-        await context.bot.send_message(
-            chat_id=query.message.chat_id,
+        return await query.edit_message_text(
             text=f"⏰ Время дайджеста: {_fmt_time(t)} ({TZ.key})",
             reply_markup=build_time_menu(_fmt_time(t)),
         )
-        return
 
-
+    # админ-пункт (без лишних сообщений)
     if data == "settings:admin":
         if not is_admin(uid):
-            await query.answer("Недостаточно прав", show_alert=True)
-            return
+            return await query.answer("Недостаточно прав", show_alert=True)
         await query.answer()
-        # ⬇️ добавь это
-        await show_digest_copy(context, query.message.chat_id, uid)
-        await context.bot.send_message(
-            chat_id=query.message.chat_id,
+        return await query.edit_message_text(
             text=("🔒 Админ-меню\n\n"
-                "Тестовые команды:\n"
-                "• /test — проверить, что бот жив\n"
-                "• /testdigest — прислать утренний дайджест сейчас\n"),
+                  "Тестовые команды:\n"
+                  "• /test — проверить, что бот жив\n"
+                  "• /testdigest — прислать утренний дайджест сейчас\n"),
             reply_markup=build_settings_menu(uid),
         )
-        return
 
-    # кнопки корректировки времени: −10/+10 мин, −1/+1 час и Сохранить
+    # кнопки корректировки времени и сохранение
     if data.startswith("settings:time:"):
         action = data.split(":")[2]  # "-10" | "+10" | "-60" | "+60" | "save"
         t = context.user_data.get("edit_time", storage.get_daily_time())
 
         if action == "-10":
-            t = _shift_time(t, -10);  context.user_data["edit_time"] = t
+            t = _shift_time(t, -10)
         elif action == "+10":
-            t = _shift_time(t, +10);  context.user_data["edit_time"] = t
+            t = _shift_time(t, +10)
         elif action == "-60":
-            t = _shift_time(t, -60);  context.user_data["edit_time"] = t
+            t = _shift_time(t, -60)
         elif action == "+60":
-            t = _shift_time(t, +60);  context.user_data["edit_time"] = t
+            t = _shift_time(t, +60)
         elif action == "save":
-            storage.set_daily_time(t)
+            # сохраняем строкой HH:MM и перерегистрируем джоб
+            storage.set_daily_time(_fmt_time(t))
             context.user_data.pop("edit_time", None)
+            register_daily_job(context, chat_id)
+            await query.answer("Сохранено")
+            # после сохранения вернёмся на экран настроек
+            return await query.edit_message_text(
+                text="⚙️ Настройки:",
+                reply_markup=build_settings_menu(uid),
+            )
 
-        await query.answer("Сохранено" if action == "save" else "")
-        await show_digest_copy(context, query.message.chat_id, uid, with_menu=False)
-        await context.bot.send_message_
+        # если не save — просто обновили предпросмотр времени
+        context.user_data["edit_time"] = t
+        await query.answer()
+        return await query.edit_message_text(
+            text=f"⏰ Время дайджеста: {_fmt_time(t)} ({TZ.key})",
+            reply_markup=build_time_menu(_fmt_time(t)),
+        )
 
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
