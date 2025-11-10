@@ -251,7 +251,9 @@ def build_guest_digest_text() -> str:
     rem = [r for r in rem if (r.get("text") or "").strip()]
     rem = [r for r in rem if _visible_for_guest(r)]
 
-    rem_today: list[dict], rem_week: list[dict], rem_month: list[dict] = [], [], []
+    rem_today: list[dict] = []
+    rem_week: list[dict] = []
+    rem_month: list[dict] = []
     rem_undated: list[str] = []
 
     for r in rem:
