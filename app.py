@@ -830,6 +830,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Ветвь напоминаний
     if data == "rem:add:start":
+        # чистим возможный «хвост» от редактирования
+        context.user_data.pop("editing_idx", None)
         await query.answer()
         uid = query.from_user.id
         chat_id = query.message.chat_id
@@ -852,6 +854,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "rem:edit:start":
         await query.answer()
+        # чистим возможный «хвост» от добавления
+        context.user_data.pop("awaiting_reminder", None)
         uid = query.from_user.id
         chat_id = query.message.chat_id
 
