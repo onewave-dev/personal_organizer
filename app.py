@@ -379,6 +379,26 @@ async def cmd_testguestdigest(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     await update.message.reply_text("Гостевой дайджест отправлен.")
 
+async def cmd_testguestdigesttome(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = await guard_auth_and_get_uid(update, context)
+    if uid is None:
+        return
+    if not is_admin(uid):
+        return await update.message.reply_text("Недостаточно прав.")
+
+    # Собираем ровно тот же текст, что и для гостя
+    text = build_guest_digest_text()
+    if not text.strip():
+        return await update.message.reply_text("Гостевой дайджест пуст (проверьте имена календаря и списка задач).")
+
+    # Отправляем админу (инициатору команды)
+    try:
+        await context.bot.send_message(chat_id=uid, text=text)
+    except Exception as e:
+        await update.message.reply_text(f"Не удалось отправить дайджест: {e}")
+        return
+
+    await update.message.reply_text("Гостевой дайджест отправлен вам.")
 
 # 5.1) Команда для установки времени дайджеста
 async def cmd_settime(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -670,7 +690,8 @@ async def on_settings_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
                   "Тестовые команды:\n"
                   "• /test — проверить, что бот жив\n"
                   "• /testdigest — прислать утренний дайджест сейчас\n"
-                  "• /testguestdigest — отправить гостевой дайджест сейчас\n"),
+                  "• /testguestdigest — отправить гостевой дайджест сейчас\n"
+                  "• /testguestdigesttome — прислать гостевой дайджест мне (админу)"),
             reply_markup=build_settings_menu(uid),
         )
 
@@ -950,6 +971,7 @@ def build_telegram_application() -> Application:
     app.add_handler(CommandHandler("test", cmd_test))
     app.add_handler(CommandHandler("testdigest", cmd_testdigest))
     app.add_handler(CommandHandler("testguestdigest", cmd_testguestdigest))
+    app.add_handler(CommandHandler("testguestdigesttome", cmd_testguestdigesttome))
     app.add_handler(CommandHandler("addreminder", cmd_addreminder))
     app.add_handler(CommandHandler("list", cmd_list))
     app.add_handler(CommandHandler("clearreminders", cmd_clearreminders))
@@ -974,6 +996,7 @@ def main():
     app.add_handler(CommandHandler("test", cmd_test))
     app.add_handler(CommandHandler("testdigest", cmd_testdigest))
     app.add_handler(CommandHandler("testguestdigest", cmd_testguestdigest))
+    app.add_handler(CommandHandler("testguestdigesttome", cmd_testguestdigesttome))
     app.add_handler(CommandHandler("addreminder", cmd_addreminder))
     app.add_handler(CommandHandler("list", cmd_list))
     app.add_handler(CommandHandler("clearreminders", cmd_clearreminders))
