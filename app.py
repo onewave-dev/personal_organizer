@@ -281,8 +281,6 @@ def build_guest_digest_text() -> str:
         "🌅 Доброе утро!",
         f"Сейчас: {now_str}",
         "",
-        f"Подборка из «{cal_name or '—'}» (события) и «{tl_name or '—'}» (задачи).",
-        "",
     ]
 
     def _append_section(title: str, items: list[dict]):
