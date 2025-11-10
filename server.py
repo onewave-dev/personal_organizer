@@ -5,7 +5,7 @@ from telegram import Update
 from datetime import time as _t
 import storage
 
-from app import build_telegram_application, build_digest_text
+from app import build_telegram_application, build_digest_text, send_guest_morning_digest
 
 load_dotenv()
 
@@ -44,6 +44,26 @@ async def _on_startup():
             )
     except Exception:
         pass
+
+    # гостевой планировщик по тому же времени (если задан гость)
+    try:
+        guest_id = int(os.getenv("GUEST_USER_ID", "0") or "0")
+        if guest_id:
+            base_t = storage.get_daily_time()
+            t_with_tz = _t(
+                base_t.hour,
+                base_t.minute,
+                tzinfo=tg_app.bot.defaults.tzinfo if tg_app.bot.defaults else None
+            )
+            tg_app.job_queue.run_daily(
+                callback=send_guest_morning_digest,
+                time=t_with_tz,
+                name=f"guest_digest_{guest_id}",
+                data={"chat_id": guest_id},
+            )
+    except Exception:
+        pass
+
 
 @fastapi_app.on_event("shutdown")
 async def _on_shutdown():

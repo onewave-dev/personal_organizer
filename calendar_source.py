@@ -72,6 +72,24 @@ def _effective_calendar_ids(service) -> List[str]:
         return ["primary"]
     return kept
 
+def _calendar_id_by_name(service, target_name: str) -> str | None:
+    if not target_name:
+        return None
+    target = target_name.strip().lower()
+    for cid, name in _list_calendars(service).items():
+        if (name or "").strip().lower() == target:
+            return cid
+    return None
+
+def _tasklist_id_by_name(service, target_name: str) -> str | None:
+    if not target_name:
+        return None
+    target = target_name.strip().lower()
+    for lst in _list_tasklists(service):
+        name = (lst.get("title") or "").strip().lower()
+        if name == target:
+            return lst.get("id")
+    return None
 
 def _sort_key_for_event(e: dict, tz: ZoneInfo) -> datetime:
     """Дата/время начала для сортировки."""
@@ -341,3 +359,58 @@ def fetch_tasks_next_days(tz_name: str, start_offset_days: int, end_offset_days:
         tasks = _filter_tasks_by_window(tasks, tz, start_day, end_day)
         lines.extend(_format_tasks_lines(tasks, tz))
     return sorted(lines)
+
+def fetch_events_struct_for_calendar(tz_name: str, start_offset_days: int, end_offset_days: int, calendar_name: str) -> list[dict]:
+    tz = ZoneInfo(tz_name)
+    now = datetime.now(tz)
+    day0 = datetime(now.year, now.month, now.day, 0, 0, tzinfo=tz)
+    start, end_next = day0 + timedelta(days=start_offset_days), day0 + timedelta(days=end_offset_days + 1)
+
+    service = build("calendar", "v3", credentials=_load_credentials())
+    cid = _calendar_id_by_name(service, calendar_name)
+    if not cid:
+        return []
+
+    items = _collect_events(service, [cid], start.astimezone(ZoneInfo("UTC")).isoformat(),
+                            end_next.astimezone(ZoneInfo("UTC")).isoformat())
+    items.sort(key=lambda e: _sort_key_for_event(e, tz))
+
+    out = []
+    for e in items:
+        title = (e.get("summary") or "(без названия)").strip()
+        s = e["start"].get("dateTime") or e["start"].get("date")
+        if s and "T" in s:
+            st = datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(tz)
+            out.append({"date": st.date(), "title": title, "time": st.strftime("%H:%M")})
+        else:
+            d = date.fromisoformat(s) if s else None
+            if d:
+                out.append({"date": d, "title": title, "time": ""})
+    return out
+
+def fetch_tasks_struct_for_list(tz_name: str, start_offset_days: int, end_offset_days: int, list_name: str) -> list[dict]:
+    tz = ZoneInfo(tz_name)
+    today = datetime.now(tz).date()
+    start_day, end_day = today + timedelta(days=start_offset_days), today + timedelta(days=end_offset_days)
+
+    service = _tasks_service()
+    tid = _tasklist_id_by_name(service, list_name)
+    if not tid:
+        return []
+
+    tasks = _list_tasks_all(service, tid)
+    tasks = _filter_tasks_by_window(tasks, tz, start_day, end_day)
+
+    out = []
+    for t in tasks:
+        title = (t.get("title") or "").strip() or "(без названия)"
+        due = t.get("due")
+        if not due:
+            continue
+        if "T" in due:
+            dt = datetime.fromisoformat(due.replace("Z", "+00:00")).astimezone(tz)
+            out.append({"date": dt.date(), "title": title, "time": dt.strftime("%H:%M")})
+        else:
+            d = date.fromisoformat(due)
+            out.append({"date": d, "title": title, "time": ""})
+    return sorted(out, key=lambda x: (x["date"], x["time"] or "99:99"))

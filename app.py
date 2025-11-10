@@ -14,7 +14,8 @@ from zoneinfo import ZoneInfo
 import storage
 from calendar_source import (
     fetch_today_events, fetch_events_next_days, fetch_events_struct,
-    fetch_tasks_today, fetch_tasks_next_days, fetch_tasks_struct
+    fetch_tasks_today, fetch_tasks_next_days, fetch_tasks_struct,
+    fetch_events_struct_for_calendar, fetch_tasks_struct_for_list,
 )
 
 # 1) Загружаем .env
@@ -30,6 +31,55 @@ def is_admin(user_id: int | None) -> bool:
         return user_id is not None and int(user_id) == ADMIN_ID
     except Exception:
         return False
+
+# --- ДОСТУПЫ / АВТОРИЗАЦИЯ ---
+def _parse_ids_csv(value: str) -> set[int]:
+    out = set()
+    for part in (value or "").split(","):
+        p = part.strip()
+        if not p:
+            continue
+        try:
+            out.add(int(p))
+        except ValueError:
+            pass
+    return out
+
+AUTHORIZED_USER_IDS = _parse_ids_csv(os.getenv("AUTHORIZED_USER_IDS", ""))
+GUEST_USER_ID = int(os.getenv("GUEST_USER_ID", "0") or "0")
+GUEST_CALENDAR_NAME = os.getenv("GUEST_CALENDAR_NAME", "").strip()
+GUEST_TASKLIST_NAME = os.getenv("GUEST_TASKLIST_NAME", "").strip()
+
+def is_allowed(user_id: int | None) -> bool:
+    if user_id is None:
+        return False
+    # админ всегда допускается
+    if is_admin(user_id):
+        return True
+    # если список пуст — допускаем только админа
+    if not AUTHORIZED_USER_IDS:
+        return False
+    return int(user_id) in AUTHORIZED_USER_IDS
+
+async def guard_auth_and_get_uid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
+    """
+    Возвращает user_id, если он авторизован.
+    Если нет — отправляет понятное сообщение и возвращает None.
+    """
+    uid = update.effective_user.id if update.effective_user else None
+    if is_allowed(uid):
+        return uid
+
+    # Ответ — в зависимости от типа апдейта:
+    if update.message:
+        await update.message.reply_text("❌ Вы не авторизованы для работы с этим ботом.")
+    elif update.callback_query:
+        try:
+            await update.callback_query.answer("Вы не авторизованы для работы с этим ботом.", show_alert=True)
+        except Exception:
+            pass
+    return None
+
 
 # --- КЛАВИАТУРЫ ---
 
@@ -160,6 +210,47 @@ def build_digest_text() -> str:
 
     return "\n".join(lines)
 
+def build_guest_digest_text() -> str:
+    now_dt = _dt.now(TZ)
+    now_str = now_dt.strftime("%d.%m.%Y %H:%M")
+
+    # если не заданы имена — вернём пусто, чтобы не слать мусор
+    cal_name = GUEST_CALENDAR_NAME
+    tl_name = GUEST_TASKLIST_NAME
+
+    ev_today  = fetch_events_struct_for_calendar(TZ_NAME, 0, 0, cal_name) if cal_name else []
+    ev_week   = fetch_events_struct_for_calendar(TZ_NAME, 1, 7, cal_name) if cal_name else []
+    ev_month  = fetch_events_struct_for_calendar(TZ_NAME, 8, 31, cal_name) if cal_name else []
+    ts_today  = fetch_tasks_struct_for_list(TZ_NAME, 0, 0, tl_name) if tl_name else []
+    ts_week   = fetch_tasks_struct_for_list(TZ_NAME, 1, 7, tl_name) if tl_name else []
+    ts_month  = fetch_tasks_struct_for_list(TZ_NAME, 8, 31, tl_name) if tl_name else []
+
+    lines = [
+        "🌅 Доброе утро!",
+        f"Сейчас: {now_str}",
+        "",
+        f"Подборка из «{cal_name or '—'}» (события) и «{tl_name or '—'}» (задачи).",
+        "",
+    ]
+
+    def _append_section(title, items):
+        lines.append(title)
+        if not items:
+            lines.append("• (пусто)")
+            lines.append("")
+            return
+        items.sort(key=lambda x: (x["date"], x["time"] or "99:99"))
+        for it in items:
+            lines.append(_fmt_unified(it["date"], it["title"], it["time"]))
+        lines.append("")
+
+    _append_section("❗️Сегодня:", ev_today + ts_today)
+    _append_section("🗓 В ближайшую неделю:", ev_week + ts_week)
+    _append_section("🗓 В ближайший месяц:", ev_month + ts_month)
+
+    return "\n".join(lines)
+
+
 # копия дайджеста для повторных выводов
 async def show_digest_copy(
     context: ContextTypes.DEFAULT_TYPE,
@@ -225,6 +316,9 @@ async def safe_edit(query, text: str, reply_markup=None):
         raise
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = await guard_auth_and_get_uid(update, context)
+    if uid is None:
+        return
     await update.message.reply_text("Тест ок ✅")
 
 # 4) Отправка дайджеста
@@ -236,9 +330,18 @@ async def send_morning_digest(context: ContextTypes.DEFAULT_TYPE):
     storage.set_last_digest(digest_text)
     await context.bot.send_message(chat_id=chat_id, text=digest_text)
 
+async def send_guest_morning_digest(context: ContextTypes.DEFAULT_TYPE):
+    if not GUEST_USER_ID:
+        return
+    text = build_guest_digest_text()
+    await context.bot.send_message(chat_id=GUEST_USER_ID, text=text)
+
 
 # 5) Команда для мгновенной проверки дайджеста
 async def cmd_testdigest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = await guard_auth_and_get_uid(update, context)
+    if uid is None:
+        return
     """Прислать свежий дайджест по команде /testdigest."""
     uid = update.effective_user.id if update.effective_user else None
 
@@ -256,9 +359,33 @@ async def cmd_testdigest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     context.user_data["at_root"] = True
 
+async def cmd_testguestdigest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = await guard_auth_and_get_uid(update, context)
+    if uid is None:
+        return
+    if not is_admin(uid):
+        return await update.message.reply_text("Недостаточно прав.")
+
+    if not GUEST_USER_ID:
+        return await update.message.reply_text("GUEST_USER_ID не задан.")
+
+    text = build_guest_digest_text()
+    # отправим как в «бою» — именно гостю
+    try:
+        await context.bot.send_message(chat_id=GUEST_USER_ID, text=text)
+    except Exception as e:
+        await update.message.reply_text(f"Не удалось отправить гостевой дайджест: {e}")
+        return
+
+    await update.message.reply_text("Гостевой дайджест отправлен.")
+
+
 # 5.1) Команда для установки времени дайджеста
 async def cmd_settime(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Установить ежедневное время рассылки: /settime 07:45"""
+    uid = await guard_auth_and_get_uid(update, context)
+    if uid is None:
+        return
     if not context.args:
         await show_digest_copy(context, update.effective_chat.id, update.effective_user.id)
         await update.message.reply_text("Укажи время: /settime HH:MM (например, 07:45)")
@@ -280,6 +407,9 @@ async def cmd_settime(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # 5.2 Показать текущее время рассылки
 async def cmd_when(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = await guard_auth_and_get_uid(update, context)
+    if uid is None:
+        return
     """Показать текущее время рассылки"""
     t = storage.get_daily_time()
     await show_digest_copy(context, update.effective_chat.id, update.effective_user.id)
@@ -289,30 +419,42 @@ async def cmd_when(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def register_daily_job(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     jq = context.job_queue
     if jq is None:
-        return  # защитно, но после явного JobQueue почти не случится
+        return
 
-    name = f"morning_digest_{chat_id}"
-
-    for job in jq.get_jobs_by_name(name):
-        job.schedule_removal()
-
-    # забираем время из стораджа (например, 07:45) и добавляем tzinfo
     base_t = storage.get_daily_time()
     t_with_tz = _t(base_t.hour, base_t.minute, tzinfo=TZ)
 
+    # основная задача
+    name_main = f"morning_digest_{chat_id}"
+    for job in jq.get_jobs_by_name(name_main):
+        job.schedule_removal()
     jq.run_daily(
         callback=send_morning_digest,
-        time=t_with_tz,          # <-- tzinfo внутри
-        name=name,
+        time=t_with_tz,
+        name=name_main,
         data={"chat_id": chat_id},
-        # timezone=TZ,           # <-- удалить для PTB 20.7
     )
+
+    # гостевая задача (если настроен гость)
+    if GUEST_USER_ID:
+        name_guest = f"guest_digest_{GUEST_USER_ID}"
+        for job in jq.get_jobs_by_name(name_guest):
+            job.schedule_removal()
+        jq.run_daily(
+            callback=send_guest_morning_digest,
+            time=t_with_tz,
+            name=name_guest,
+            data={"chat_id": GUEST_USER_ID},
+        )
 
 
 # Регистрацию ежедневной рассылки делаем ПОСЛЕ того,
 # как ты напишешь боту /start (чтобы знать твой chat_id).
 # Перехватим /start как триггер регистрации job
 async def cmd_start_and_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = await guard_auth_and_get_uid(update, context)
+    if uid is None:
+        return
     cid = update.effective_chat.id
     storage.set_chat_id(cid)
     uid = update.effective_user.id if update.effective_user else None
@@ -362,6 +504,9 @@ async def cmd_addreminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     /addreminder Текст DD-MM-YYYY  (дата — последний токен; допускаются любые разделители)
     Логика: берём ПОСЛЕДНИЙ аргумент как кандидат даты; если это DD-MM-YYYY, парсим; иначе — считаем, что даты нет.
     """
+    uid = await guard_auth_and_get_uid(update, context)
+    if uid is None:
+        return
     if not context.args:
         await update.message.reply_text(
             "Используй:\n"
@@ -426,6 +571,9 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
       • без даты — обычные пункты
       • с датой — выводит дату в формате DD.MM.YYYY
     """
+    uid = await guard_auth_and_get_uid(update, context)
+    if uid is None:
+        return
     items = storage.list_custom_reminders()
     if not items:
         await show_digest_copy(context, update.effective_chat.id, update.effective_user.id)
@@ -455,6 +603,9 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # очистка списка
 async def cmd_clearreminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = await guard_auth_and_get_uid(update, context)
+    if uid is None:
+        return
     storage.clear_custom_reminders()
     await rebuild_and_show_digest(context, update.effective_chat.id, update.effective_user.id, with_menu=True)
     await update.message.reply_text("Список напоминаний очищен.")
@@ -518,7 +669,8 @@ async def on_settings_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
             text=("🔒 Админ-меню\n\n"
                   "Тестовые команды:\n"
                   "• /test — проверить, что бот жив\n"
-                  "• /testdigest — прислать утренний дайджест сейчас\n"),
+                  "• /testdigest — прислать утренний дайджест сейчас\n"
+                  "• /testguestdigest — отправить гостевой дайджест сейчас\n"),
             reply_markup=build_settings_menu(uid),
         )
 
@@ -557,6 +709,9 @@ async def on_settings_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = await guard_auth_and_get_uid(update, context)
+    if uid is None:
+        return
     query = update.callback_query
     data = query.data or ""
 
@@ -707,6 +862,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
 async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = await guard_auth_and_get_uid(update, context)
+    if uid is None:
+        return
     text = (update.effective_message.text or "").strip()
 
     #обработка редактирования существующего напоминания
@@ -791,6 +949,7 @@ def build_telegram_application() -> Application:
     app.add_handler(CommandHandler("start", cmd_start_and_schedule))
     app.add_handler(CommandHandler("test", cmd_test))
     app.add_handler(CommandHandler("testdigest", cmd_testdigest))
+    app.add_handler(CommandHandler("testguestdigest", cmd_testguestdigest))
     app.add_handler(CommandHandler("addreminder", cmd_addreminder))
     app.add_handler(CommandHandler("list", cmd_list))
     app.add_handler(CommandHandler("clearreminders", cmd_clearreminders))
@@ -814,6 +973,7 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start_and_schedule))
     app.add_handler(CommandHandler("test", cmd_test))
     app.add_handler(CommandHandler("testdigest", cmd_testdigest))
+    app.add_handler(CommandHandler("testguestdigest", cmd_testguestdigest))
     app.add_handler(CommandHandler("addreminder", cmd_addreminder))
     app.add_handler(CommandHandler("list", cmd_list))
     app.add_handler(CommandHandler("clearreminders", cmd_clearreminders))
