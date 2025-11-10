@@ -122,6 +122,19 @@ def _collect_events(service, calendar_ids: List[str], time_min_iso: str, time_ma
         items.extend(resp.get("items", []))
     return items
 
+def _is_all_day_due(due: str) -> bool:
+    """
+    True, если due указывает на «целый день».
+    Правило: либо нет 'T' вообще (просто дата), либо время в UTC ровно 00:00:00.
+    """
+    try:
+        if "T" not in due:
+            return True
+        dt_utc = datetime.fromisoformat(due.replace("Z", "+00:00"))
+        return dt_utc.hour == 0 and dt_utc.minute == 0 and dt_utc.second == 0
+    except Exception:
+        return False
+
 
 def fetch_today_events(tz_name: str) -> List[str]:
     tz = ZoneInfo(tz_name)
@@ -224,22 +237,40 @@ def fetch_tasks_struct(tz_name: str, start_offset_days: int, end_offset_days: in
     start_day, end_day = today + timedelta(days=start_offset_days), today + timedelta(days=end_offset_days)
     service = _tasks_service()
     out = []
+
     for lst in _list_tasklists(service):
         tasks = _list_tasks_all(service, lst["id"])
         tasks = _filter_tasks_by_window(tasks, tz, start_day, end_day)
+
         for t in tasks:
             title = (t.get("title") or "").strip() or "(без названия)"
             due = t.get("due")
             if not due:
                 continue
-            if "T" in due:
-                dt = datetime.fromisoformat(due.replace("Z", "+00:00")).astimezone(tz)
-                out.append({"date": dt.date(), "title": title, "time": dt.strftime("%H:%M")})
-            else:
-                d = date.fromisoformat(due)
-                out.append({"date": d, "title": title, "time": ""})
+
+            try:
+                # 1) Без 'T' -> просто дата (целый день)
+                if "T" not in due:
+                    d = date.fromisoformat(due)
+                    out.append({"date": d, "title": title, "time": ""})
+                    continue
+
+                # 2) Есть 'T' -> парсим как UTC и переводим в локаль
+                dt_utc = datetime.fromisoformat(due.replace("Z", "+00:00"))
+
+                # Если время ровно 00:00:00 UTC — трактуем как целодневную задачу (без времени)
+                if dt_utc.hour == 0 and dt_utc.minute == 0 and dt_utc.second == 0:
+                    d_local = dt_utc.astimezone(tz).date()
+                    out.append({"date": d_local, "title": title, "time": ""})
+                else:
+                    dt_local = dt_utc.astimezone(tz)
+                    out.append({"date": dt_local.date(), "title": title, "time": dt_local.strftime("%H:%M")})
+            except Exception:
+                # Если что-то пошло не так с парсингом — пропускаем такую задачу
+                continue
 
     return sorted(out, key=lambda x: (x["date"], x["time"] or "99:99"))
+
 
 # --- Google Tasks ---
 
@@ -311,18 +342,22 @@ def _format_tasks_lines(tasks: list[dict], tz: ZoneInfo) -> list[str]:
         title = (t.get("title") or "").strip() or "(без названия)"
         due_raw = t.get("due")
         if not due_raw:
-            # без due — не показываем в датированных подборках
             continue
         try:
-            if "T" in due_raw:
+            if _is_all_day_due(due_raw):
+                # день без времени
+                if "T" in due_raw:
+                    d = datetime.fromisoformat(due_raw.replace("Z", "+00:00")).astimezone(tz).date()
+                else:
+                    d = date.fromisoformat(due_raw)
+                out.append(f"{d:%d.%m} [Задача] {title}")
+            else:
                 dt = datetime.fromisoformat(due_raw.replace("Z", "+00:00")).astimezone(tz)
                 out.append(f"{dt:%d.%m} {dt:%H:%M} [Задача] {title}")
-            else:
-                d = date.fromisoformat(due_raw)
-                out.append(f"{d:%d.%m} [Задача] {title}")
         except Exception:
             out.append(f"[Задача] {title}")
     return out
+
 
 def _tasks_time_window_utc(tz_name: str, start_day_offset: int, end_day_offset: int) -> tuple[str, str]:
     """
@@ -407,10 +442,17 @@ def fetch_tasks_struct_for_list(tz_name: str, start_offset_days: int, end_offset
         due = t.get("due")
         if not due:
             continue
-        if "T" in due:
+
+        if _is_all_day_due(due):
+            # целодневная задача: дата без времени
+            if "T" in due:
+                d = datetime.fromisoformat(due.replace("Z", "+00:00")).astimezone(tz).date()
+            else:
+                d = date.fromisoformat(due)
+            out.append({"date": d, "title": title, "time": ""})
+        else:
+            # задача со временем
             dt = datetime.fromisoformat(due.replace("Z", "+00:00")).astimezone(tz)
             out.append({"date": dt.date(), "title": title, "time": dt.strftime("%H:%M")})
-        else:
-            d = date.fromisoformat(due)
-            out.append({"date": d, "title": title, "time": ""})
+
     return sorted(out, key=lambda x: (x["date"], x["time"] or "99:99"))
