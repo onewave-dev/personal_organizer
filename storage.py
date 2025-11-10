@@ -72,7 +72,9 @@ def list_custom_reminders() -> list[dict]:
     for item in arr:
         # Старый тип: просто строка
         if isinstance(item, str):
-            out.append({"text": item})
+            text = item.strip()
+            if text:
+                out.append({"text": text})
             continue
 
         if not isinstance(item, dict):
@@ -82,12 +84,16 @@ def list_custom_reminders() -> list[dict]:
         if not text:
             continue
 
+        user_id = item.get("user_id")
+        share_flag = bool(item.get("share"))
+
         due = item.get("due")
         if not due:
-            # Даты нет, сохраняем user_id
+            # Даты нет
             out.append({
                 "text": text,
-                "user_id": item.get("user_id")
+                **({"user_id": user_id} if user_id is not None else {}),
+                **({"share": True} if share_flag else {}),
             })
             continue
 
@@ -96,7 +102,8 @@ def list_custom_reminders() -> list[dict]:
             out.append({
                 "text": text,
                 "due": due,
-                "user_id": item.get("user_id")
+                **({"user_id": user_id} if user_id is not None else {}),
+                **({"share": True} if share_flag else {}),
             })
             continue
 
@@ -107,22 +114,26 @@ def list_custom_reminders() -> list[dict]:
                 out.append({
                     "text": text,
                     "due": d.strftime("%Y-%m-%d"),
-                    "user_id": item.get("user_id")
+                    **({"user_id": user_id} if user_id is not None else {}),
+                    **({"share": True} if share_flag else {}),
                 })
             except ValueError:
                 out.append({
                     "text": text,
-                    "user_id": item.get("user_id")
+                    **({"user_id": user_id} if user_id is not None else {}),
+                    **({"share": True} if share_flag else {}),
                 })
             continue
 
         # Если формат даты неизвестен — просто сохраняем текст
         out.append({
             "text": text,
-            "user_id": item.get("user_id")
+            **({"user_id": user_id} if user_id is not None else {}),
+            **({"share": True} if share_flag else {}),
         })
 
     return out
+
 
 
 def list_user_reminders(user_id: int) -> list[dict]:
@@ -133,7 +144,7 @@ def list_user_reminders(user_id: int) -> list[dict]:
 def _norm_text(s: str) -> str:
     return (s or "").strip().lower()
 
-def add_custom_reminder(text: str, due: str | None = None, user_id: int | None = None) -> None:
+def add_custom_reminder(text: str, due: str | None = None, user_id: int | None = None, share: bool | None = None) -> None:
     """
     Добавляет напоминание. Дата `due` — ISO 'YYYY-MM-DD' (опционально).
     Если дата указана, валидируем её и сохраняем как ISO.
@@ -186,6 +197,8 @@ def add_custom_reminder(text: str, due: str | None = None, user_id: int | None =
         new_item["due"] = due
     if user_id:
         new_item["user_id"] = user_id
+    if share is True:
+        new_item["share"] = True
     arr.append(new_item)
 
     data["custom_reminders"] = arr
@@ -212,15 +225,20 @@ def delete_user_reminder(user_id: int, index_in_user_list: int) -> bool:
     _save(data)
     return True
 
-def update_user_reminder(user_id: int, index_in_user_list: int, *, new_text: str, new_due_iso: str | None) -> bool:
+def update_user_reminder(user_id: int, index_in_user_list: int, *, new_text: str, new_due_iso: str | None, new_share: bool | None = None) -> bool:
     all_items = list_custom_reminders()
     user_items = [i for i in all_items if i.get("user_id") == user_id]
     if not (0 <= index_in_user_list < len(user_items)): 
         return False
     item = user_items[index_in_user_list] 
     item["text"] = new_text.strip()
-    if new_due_iso: 
+    if new_due_iso:
         item["due"] = new_due_iso
+    # управляем флагом расшаривания
+    if new_share is True:
+        item["share"] = True
+    elif new_share is False:
+        item.pop("share", None)
     data = _load()
     data["custom_reminders"] = all_items
     _save(data)

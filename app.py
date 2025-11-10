@@ -147,13 +147,15 @@ def build_digest_text() -> str:
 
     # 1) Напоминания (нормализуем старый формат строк → словари)
     all_rem = storage.list_custom_reminders()
-    normalized = []
-    for item in all_rem:
-        if isinstance(item, dict):
-            normalized.append(item)
-        else:
-            normalized.append({"text": str(item)})
-    all_rem = normalized
+
+    def _visible_for_admin(r: dict) -> bool:
+        uid = r.get("user_id")
+        shared = bool(r.get("share"))
+        return (uid == ADMIN_ID) or (uid == GUEST_USER_ID) or shared
+
+    all_rem = [r if isinstance(r, dict) else {"text": str(r)} for r in all_rem]
+    all_rem = [r for r in all_rem if (r.get("text") or "").strip()]
+    all_rem = [r for r in all_rem if _visible_for_admin(r)]
 
     undated = [r for r in all_rem if not r.get("due")]
     today_dated = [r for r in all_rem if r.get("due") == today_iso]
@@ -214,9 +216,8 @@ def build_guest_digest_text() -> str:
     now_dt = _dt.now(TZ)
     now_str = now_dt.strftime("%d.%m.%Y %H:%M")
 
-    # если не заданы имена — вернём пусто, чтобы не слать мусор
     cal_name = GUEST_CALENDAR_NAME
-    tl_name = GUEST_TASKLIST_NAME
+    tl_name  = GUEST_TASKLIST_NAME
 
     ev_today  = fetch_events_struct_for_calendar(TZ_NAME, 0, 0, cal_name) if cal_name else []
     ev_week   = fetch_events_struct_for_calendar(TZ_NAME, 1, 7, cal_name) if cal_name else []
@@ -224,6 +225,38 @@ def build_guest_digest_text() -> str:
     ts_today  = fetch_tasks_struct_for_list(TZ_NAME, 0, 0, tl_name) if tl_name else []
     ts_week   = fetch_tasks_struct_for_list(TZ_NAME, 1, 7, tl_name) if tl_name else []
     ts_month  = fetch_tasks_struct_for_list(TZ_NAME, 8, 31, tl_name) if tl_name else []
+
+    # --- НОВОЕ: напоминания, видимые гостю ---
+    today = now_dt.date()
+    today_iso = today.isoformat()
+    all_rem = storage.list_custom_reminders()
+
+    def _visible_for_guest(r: dict) -> bool:
+        uid = r.get("user_id")
+        shared = bool(r.get("share"))
+        return (uid == GUEST_USER_ID) or (uid == ADMIN_ID and shared)
+
+    rem = [r if isinstance(r, dict) else {"text": str(r)} for r in all_rem]
+    rem = [r for r in rem if (r.get("text") or "").strip()]
+    rem = [r for r in rem if _visible_for_guest(r)]
+
+    rem_today, rem_week, rem_month = [], [], []
+    for r in rem:
+        txt = (r.get("text") or "").strip()
+        due = r.get("due")
+        if not due:
+            rem_today.append({"date": today, "title": txt, "time": ""})
+            continue
+        try:
+            d = _dt.strptime(due, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if d == today:
+            rem_today.append({"date": d, "title": txt, "time": ""})
+        elif today + _td(days=1) <= d <= today + _td(days=7):
+            rem_week.append({"date": d, "title": txt, "time": ""})
+        elif today + _td(days=8) <= d <= today + _td(days=31):
+            rem_month.append({"date": d, "title": txt, "time": ""})
 
     lines = [
         "🌅 Доброе утро!",
@@ -244,12 +277,11 @@ def build_guest_digest_text() -> str:
             lines.append(_fmt_unified(it["date"], it["title"], it["time"]))
         lines.append("")
 
-    _append_section("❗️Сегодня:", ev_today + ts_today)
-    _append_section("🗓 В ближайшую неделю:", ev_week + ts_week)
-    _append_section("🗓 В ближайший месяц:", ev_month + ts_month)
+    _append_section("❗️Сегодня:", (ev_today + ts_today + rem_today))
+    _append_section("🗓 В ближайшую неделю:", (ev_week + ts_week + rem_week))
+    _append_section("🗓 В ближайший месяц:", (ev_month + ts_month + rem_month))
 
     return "\n".join(lines)
-
 
 # копия дайджеста для повторных выводов
 async def show_digest_copy(
@@ -517,6 +549,17 @@ def _normalize_all(s: str) -> str:
 
 # ── Дата в КОНЦЕ: берём DD<нецифра>MM<нецифра>YYYY, перед ней могут быть пробелы/запятые/переносы
 DATE_TAIL_RE = re.compile(r"[, \t\r\n]*(\d{1,2})\D(\d{1,2})\D(\d{4})\s*$")
+# ── Маркер шаринга для гостя в конце текста (любой из m/M/м/М).
+MARKER_SHARE_RE = re.compile(r"\s*@\s*[mMмМ]\s*$")
+
+def _strip_share_marker(text: str) -> tuple[str, bool]:
+    """Возвращает (очищенный_текст, share_flag) по маркеру @m/м в конце."""
+    if not text:
+        return "", False
+    if MARKER_SHARE_RE.search(text):
+        clean = MARKER_SHARE_RE.sub("", text).rstrip()
+        return clean, True
+    return text, False
 
 async def cmd_addreminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -547,6 +590,7 @@ async def cmd_addreminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     candidate = args_norm[-1]                 # ПОСЛЕДНИЙ токен — кандидат на дату
     digit_parts = re.split(r"\D+", candidate) # режем по ЛЮБОЙ не-цифре ( '-', '–', '/', и т.п.)
     due_iso = None
+    d_str = m_str = y_str = None
 
     if len(digit_parts) == 3 and all(p.isdigit() for p in digit_parts):
         d_str, m_str, y_str = digit_parts
@@ -569,20 +613,34 @@ async def cmd_addreminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Дата не распознана — трактуем как напоминание БЕЗ даты (никакой ошибки)
         text = " ".join(args_norm).strip()
 
+    # --- НОВОЕ: поддержка «общих» напоминаний ---
+    # Админ: маркер @m/м/M/M в конце строки делает напоминание общим (share=True)
+    # Гость: любое его напоминание автоматически общее (share=True); маркер игнорируется
+    is_admin_user = is_admin(update.effective_user.id)
+    body_to_store = text
+    if is_admin_user:
+        body_to_store, share_flag = _strip_share_marker(body_to_store)
+    else:
+        share_flag = True  # все напоминания гостя — общие
+
     try:
-        storage.add_custom_reminder(text, due=due_iso, user_id=update.effective_user.id)  # due_iso может быть None
+        # правильный вариант
+        storage.add_custom_reminder(body_to_store, due=due_iso, user_id=update.effective_user.id, share=share_flag)
+
     except ValueError as e:
         await update.message.reply_text(str(e))
         return
 
-    if due_iso:
+    if due_iso and d_str and m_str and y_str:
         await update.message.reply_text(
-            f"Добавил напоминание: {text} (на {d_str.zfill(2)}-{m_str.zfill(2)}-{y_str})"
+            f"Добавил напоминание: {body_to_store} (на {d_str.zfill(2)}-{m_str.zfill(2)}-{y_str})"
         )
     else:
-        await update.message.reply_text(f"Добавил напоминание: {text}")
+        await update.message.reply_text(f"Добавил напоминание: {body_to_store}")
+
     # Сразу обновим дайджест
     await rebuild_and_show_digest(context, update.effective_chat.id, update.effective_user.id, with_menu=True)
+
 
 # просмотр напоминаний
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -594,7 +652,7 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = await guard_auth_and_get_uid(update, context)
     if uid is None:
         return
-    items = storage.list_custom_reminders()
+    items = storage.list_user_reminders(uid)
     if not items:
         await show_digest_copy(context, update.effective_chat.id, update.effective_user.id)
         await update.message.reply_text("Пока нет пользовательских напоминаний.")
@@ -888,29 +946,58 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     text = (update.effective_message.text or "").strip()
 
-    #обработка редактирования существующего напоминания
+    # локальный helper для маркера @m/м (общий доступ для гостя виден всегда)
+    def _strip_share_marker(local_text: str) -> tuple[str, bool]:
+        marker_re = re.compile(r"\s*@\s*[mMмМ]\s*$")
+        if not local_text:
+            return "", False
+        if marker_re.search(local_text):
+            return marker_re.sub("", local_text).rstrip(), True
+        return local_text, False
+
+    # локальный helper для универсального парсинга даты DD-MM-YYYY с любыми разделителями
+    def _parse_tail_date(any_sep_tail: str) -> tuple[str, str | None]:
+        """
+        Принимает полный текст.
+        Возвращает (body, iso_date_or_None), где body — текст без распознанной даты в конце.
+        Поддерживает разделители -, ., /, пробел и т.п. (любая не-цифра).
+        """
+        m = re.search(r"(.*)\s(\d{2}\D\d{2}\D\d{4})$", any_sep_tail)
+        if not m:
+            return any_sep_tail, None
+        body = m.group(1).strip()
+        ddmmyyyy = m.group(2)
+        parts = re.split(r"\D+", ddmmyyyy)
+        if len(parts) != 3 or not all(p.isdigit() for p in parts):
+            return any_sep_tail, None
+        d_str, m_str, y_str = parts
+        try:
+            dt = _dt(int(y_str), int(m_str), int(d_str))
+            return body, dt.strftime("%Y-%m-%d")
+        except Exception:
+            return any_sep_tail, None
+
+    is_admin_user = is_admin(update.effective_user.id)
+
+    # --- обработка редактирования существующего напоминания ---
     if context.user_data.get("editing_idx") is not None:
         idx = context.user_data.get("editing_idx")
-        uid = update.effective_user.id
-        # парсинг даты из текста напоминания 
-        m = re.search(r"(.*)\s(\d{2}-\d{2}-\d{4})$", text)
-        if m:
-            body = m.group(1).strip()
-            ddmmyyyy = m.group(2)
-            try:
-                iso = _dt.strptime(ddmmyyyy, "%d-%m-%Y").strftime("%Y-%m-%d")
-            except ValueError:
-                return await update.effective_message.reply_text("Дата должна быть в формате DD-MM-YYYY.")
+
+        body, iso = _parse_tail_date(text)
+        if iso is None and re.search(r"\d", text) and re.search(r"\s\d{2}\D\d{2}\D\d{4}$", text):
+            # Похоже на дату, но невалидно
+            return await update.effective_message.reply_text("Дата должна быть в формате DD-MM-YYYY.")
+
+        # вычисляем флаг share так же, как при добавлении
+        if is_admin_user:
+            body, marker = _strip_share_marker(body)
+            new_share = True if marker else False
         else:
-            body = text
-            iso = None
-        # вызов обновления и ответ пользователю
-        ok = storage.update_user_reminder(uid, idx, new_text=body, new_due_iso=iso)
-        context.user_data.pop("editing_idx", None) # обнуляем индекс редактирование (после успешного редактирования)
+            new_share = True  # гость: всегда shared=True
+
+        ok = storage.update_user_reminder(update.effective_user.id, idx, new_text=body, new_due_iso=iso, new_share=new_share)
+        context.user_data.pop("editing_idx", None)   # обнуляем индекс редактирования
         context.user_data["awaiting_reminder"] = False
-        reply_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ В раздел «Напоминания»", callback_data="menu:reminders")]
-        ])
 
         if ok:
             await rebuild_and_show_digest(context, update.effective_chat.id, update.effective_user.id, with_menu=True)
@@ -919,13 +1006,13 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ В главное меню", callback_data="menu:root")]])
             )
         else:
-            # при неудаче копию можно оставить как есть
             await show_digest_copy(context, update.effective_chat.id, update.effective_user.id)
             return await update.effective_message.reply_text(
                 "Не удалось изменить.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ В главное меню", callback_data="menu:root")]])
             )
 
+    # --- добавление нового напоминания в режиме ожидания текста ---
     if not context.user_data.get("awaiting_reminder"):
         return
 
@@ -933,18 +1020,17 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("Пустое сообщение. Отправь текст напоминания.")
         return
 
-    m = re.search(r"(.*)\s(\d{2}-\d{2}-\d{4})$", text)
-    if m:
-        body = m.group(1).strip()
-        ddmmyyyy = m.group(2)
-        try:
-            iso = _dt.strptime(ddmmyyyy, "%d-%m-%Y").strftime("%Y-%m-%d")
-        except ValueError:
-            await update.effective_message.reply_text("Дата должна быть в формате DD-MM-YYYY.")
-            return
-        storage.add_custom_reminder(body, iso, user_id=update.effective_user.id)
+    body, iso = _parse_tail_date(text)
+    if iso is None and re.search(r"\d", text) and re.search(r"\s\d{2}\D\d{2}\D{4}$", text):
+        await update.effective_message.reply_text("Дата должна быть в формате DD-MM-YYYY.")
+        return
+
+    if is_admin_user:
+        body, share_flag = _strip_share_marker(body)
     else:
-        storage.add_custom_reminder(text, user_id=update.effective_user.id)
+        share_flag = True  # все напоминания гостя — общие
+
+    storage.add_custom_reminder(body, iso, user_id=update.effective_user.id, share=share_flag)
 
     context.user_data["awaiting_reminder"] = False
     await rebuild_and_show_digest(context, update.effective_chat.id, update.effective_user.id, with_menu=True)
@@ -952,6 +1038,7 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ Напоминание добавлено.",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ В главное меню", callback_data="menu:root")]])
     )
+
 
 # для серверного запуска с webhook из server.py
 
