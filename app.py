@@ -440,7 +440,11 @@ async def cmd_testguestdigest(update: Update, context: ContextTypes.DEFAULT_TYPE
     text = build_guest_digest_text()
     # отправим как в «бою» — именно гостю
     try:
-        await context.bot.send_message(chat_id=GUEST_USER_ID, text=text)
+        await context.bot.send_message(
+            chat_id=GUEST_USER_ID,
+            text=text,
+            reply_markup=build_main_menu(GUEST_USER_ID),
+        )
     except Exception as e:
         await update.message.reply_text(f"Не удалось отправить гостевой дайджест: {e}")
         return
@@ -461,11 +465,16 @@ async def cmd_testguestdigesttome(update: Update, context: ContextTypes.DEFAULT_
 
     # Отправляем админу (инициатору команды)
     try:
-        await context.bot.send_message(chat_id=uid, text=text)
+        await context.bot.send_message(
+            chat_id=uid,
+            text=text,
+            reply_markup=build_main_menu(uid),
+        )
     except Exception as e:
         await update.message.reply_text(f"Не удалось отправить дайджест: {e}")
         return
 
+    context.user_data["at_root"] = True
     await update.message.reply_text("Гостевой дайджест отправлен вам.")
 
 # 5.1) Команда для установки времени дайджеста
