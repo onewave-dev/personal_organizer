@@ -384,13 +384,25 @@ async def send_morning_digest(context: ContextTypes.DEFAULT_TYPE):
     digest_text = build_digest_text()
     context.bot_data["last_digest_text"] = digest_text
     storage.set_last_digest(digest_text)
-    await context.bot.send_message(chat_id=chat_id, text=digest_text)
+    # На главном экране всегда должна быть клавиатура с основными действиями.
+    # Для приватных чатов chat_id совпадает с user_id, что позволяет показать
+    # админские пункты только админу. В группах оставляем базовый набор.
+    user_id_for_menu = chat_id if isinstance(chat_id, int) and chat_id > 0 else None
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=digest_text,
+        reply_markup=build_main_menu(user_id_for_menu),
+    )
 
 async def send_guest_morning_digest(context: ContextTypes.DEFAULT_TYPE):
     if not GUEST_USER_ID:
         return
     text = build_guest_digest_text()
-    await context.bot.send_message(chat_id=GUEST_USER_ID, text=text)
+    await context.bot.send_message(
+        chat_id=GUEST_USER_ID,
+        text=text,
+        reply_markup=build_main_menu(GUEST_USER_ID),
+    )
 
 
 # 5) Команда для мгновенной проверки дайджеста
