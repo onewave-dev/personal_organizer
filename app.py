@@ -734,7 +734,8 @@ async def on_main_menu(query, context: ContextTypes.DEFAULT_TYPE):
 
     text = context.bot_data.get("last_digest_text")
     if not text:
-        await query.edit_message_text(
+        await safe_edit(
+            query,
             text="(Пока нет свежего дайджеста — нажми «↻ Обновить» или /testdigest)",
             reply_markup=build_main_menu(uid),
         )
@@ -755,9 +756,10 @@ async def on_settings_menu(query, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["at_root"] = False
 
     await query.answer()
-    await query.edit_message_text(
+    await safe_edit(
+        query,
         text="⚙️ Настройки:",
-        reply_markup=build_settings_menu(uid)
+        reply_markup=build_settings_menu(uid),
     )
 
 
@@ -772,7 +774,8 @@ async def on_settings_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
         t = storage.get_daily_time()
         context.user_data["edit_time"] = t
         await query.answer()
-        return await query.edit_message_text(
+        return await safe_edit(
+            query,
             text=f"⏰ Время дайджеста: {_fmt_time(t)} ({TZ.key})",
             reply_markup=build_time_menu(_fmt_time(t)),
         )
@@ -782,13 +785,16 @@ async def on_settings_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if not is_admin(uid):
             return await query.answer("Недостаточно прав", show_alert=True)
         await query.answer()
-        return await query.edit_message_text(
-            text=("🔒 Админ-меню\n\n"
-                  "Тестовые команды:\n"
-                  "• /test — проверить, что бот жив\n"
-                  "• /testdigest — прислать утренний дайджест сейчас\n"
-                  "• /testguestdigest — отправить гостевой дайджест сейчас\n"
-                  "• /testguestdigesttome — прислать гостевой дайджест мне (админу)"),
+        return await safe_edit(
+            query,
+            text=(
+                "🔒 Админ-меню\n\n"
+                "Тестовые команды:\n"
+                "• /test — проверить, что бот жив\n"
+                "• /testdigest — прислать утренний дайджест сейчас\n"
+                "• /testguestdigest — отправить гостевой дайджест сейчас\n"
+                "• /testguestdigesttome — прислать гостевой дайджест мне (админу)"
+            ),
             reply_markup=build_settings_menu(uid),
         )
 
@@ -812,7 +818,8 @@ async def on_settings_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
             register_daily_job(context, chat_id)
             await query.answer("Сохранено")
             # после сохранения вернёмся на экран настроек
-            return await query.edit_message_text(
+            return await safe_edit(
+                query,
                 text="⚙️ Настройки:",
                 reply_markup=build_settings_menu(uid),
             )
@@ -820,7 +827,8 @@ async def on_settings_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # если не save — просто обновили предпросмотр времени
         context.user_data["edit_time"] = t
         await query.answer()
-        return await query.edit_message_text(
+        return await safe_edit(
+            query,
             text=f"⏰ Время дайджеста: {_fmt_time(t)} ({TZ.key})",
             reply_markup=build_time_menu(_fmt_time(t)),
         )
@@ -956,9 +964,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                       chat_id=query.message.chat_id, 
                                       user_id=uid, with_menu=True)
 
-        return await query.edit_message_text(
+        return await safe_edit(
+            query,
             text=("Удалено." if ok else "Не удалось удалить."),
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="rem:edit:start")]])
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("⬅️ Назад", callback_data="rem:edit:start")]]
+            ),
         )
 
 
@@ -968,9 +979,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         idx = int(data.split(":")[1])
         context.user_data["editing_idx"] = idx
-        return await query.edit_message_text(
+        return await safe_edit(
+            query,
             text="Отправь новый текст (и при желании дату: DD-MM-YYYY) одним сообщением.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="rem:edit:start")]])
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("⬅️ Назад", callback_data="rem:edit:start")]]
+            ),
         )
 
 
