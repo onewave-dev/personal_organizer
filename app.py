@@ -3,7 +3,7 @@ import asyncio
 import re
 import unicodedata
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.ext import Application, ContextTypes, CommandHandler, JobQueue, CallbackQueryHandler, MessageHandler, filters
 from telegram.error import BadRequest
 
@@ -113,6 +113,29 @@ def schedule_message_autodelete(message, context: ContextTypes.DEFAULT_TYPE, del
         delay_seconds,
         data={"chat_id": message.chat_id, "message_id": message.message_id},
     )
+
+
+LOADING_MESSAGE_TEXT = "Тяну обновления из календаря. Чуток подождите..."
+
+
+async def show_loading_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int, *, enabled: bool = True) -> Message | None:
+    if not enabled:
+        return None
+    try:
+        return await context.bot.send_message(chat_id=chat_id, text=LOADING_MESSAGE_TEXT)
+    except Exception:
+        return None
+
+
+async def hide_loading_message(context: ContextTypes.DEFAULT_TYPE, message: Message | None) -> None:
+    if not message:
+        return
+    try:
+        await context.bot.delete_message(chat_id=message.chat_id, message_id=message.message_id)
+    except BadRequest:
+        pass
+    except Exception:
+        pass
 
 
 # --- КЛАВИАТУРЫ ---
@@ -374,12 +397,46 @@ async def rebuild_and_show_digest(
     chat_id: int,
     user_id: int | None,
     with_menu: bool = True,
+    show_loading: bool = True,
+    reply_to_message_id: int | None = None,
 ):
-    digest_text = build_digest_text()
-    context.bot_data["last_digest_text"] = digest_text
-    storage.set_last_digest(digest_text)
-    reply_markup = build_main_menu(user_id) if with_menu else None
-    await context.bot.send_message(chat_id=chat_id, text=digest_text, reply_markup=reply_markup)
+    loading_msg = await show_loading_message(context, chat_id, enabled=show_loading)
+    try:
+        digest_text = build_digest_text()
+        context.bot_data["last_digest_text"] = digest_text
+        storage.set_last_digest(digest_text)
+        reply_markup = build_main_menu(user_id) if with_menu else None
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=digest_text,
+            reply_markup=reply_markup,
+            reply_to_message_id=reply_to_message_id,
+        )
+    finally:
+        await hide_loading_message(context, loading_msg)
+
+
+async def send_guest_digest_message(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    user_id_for_menu: int | None,
+    *,
+    show_loading: bool = True,
+    skip_if_blank: bool = False,
+) -> tuple[bool, str]:
+    loading_msg = await show_loading_message(context, chat_id, enabled=show_loading)
+    try:
+        text = build_guest_digest_text()
+        if skip_if_blank and not text.strip():
+            return False, text
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=build_main_menu(user_id_for_menu),
+        )
+        return True, text
+    finally:
+        await hide_loading_message(context, loading_msg)
 
 async def safe_edit(query, text: str, reply_markup=None):
     """Аккуратно правит сообщение, игнорируя 'Message is not modified'."""
@@ -415,27 +472,26 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def send_morning_digest(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.data["chat_id"]
     print(f"[digest] sending to {chat_id}") # лог
-    digest_text = build_digest_text()
-    context.bot_data["last_digest_text"] = digest_text
-    storage.set_last_digest(digest_text)
     # На главном экране всегда должна быть клавиатура с основными действиями.
     # Для приватных чатов chat_id совпадает с user_id, что позволяет показать
     # админские пункты только админу. В группах оставляем базовый набор.
     user_id_for_menu = chat_id if isinstance(chat_id, int) and chat_id > 0 else None
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=digest_text,
-        reply_markup=build_main_menu(user_id_for_menu),
+    await rebuild_and_show_digest(
+        context,
+        chat_id,
+        user_id_for_menu,
+        with_menu=True,
+        show_loading=False,
     )
 
 async def send_guest_morning_digest(context: ContextTypes.DEFAULT_TYPE):
     if not GUEST_USER_ID:
         return
-    text = build_guest_digest_text()
-    await context.bot.send_message(
+    await send_guest_digest_message(
+        context,
         chat_id=GUEST_USER_ID,
-        text=text,
-        reply_markup=build_main_menu(GUEST_USER_ID),
+        user_id_for_menu=GUEST_USER_ID,
+        show_loading=False,
     )
 
 
@@ -445,19 +501,13 @@ async def cmd_testdigest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid is None:
         return
     """Прислать свежий дайджест по команде /testdigest."""
-    uid = update.effective_user.id if update.effective_user else None
-
-    # 1) Сгенерировать НОВЫЙ дайджест (подтянуть актуальные данные из календарей/тасков)
-    digest_text = build_digest_text()
-
-    # 2) Сохранить как «последний дайджест» для показа копии в других местах
-    context.bot_data["last_digest_text"] = digest_text
-    storage.set_last_digest(digest_text)
-
-    # 3) Отправить сообщение с дайджестом + главное меню под ним
-    await update.message.reply_text(
-        digest_text,
-        reply_markup=build_main_menu(uid),
+    reply_to = update.message.message_id if update.message else None
+    await rebuild_and_show_digest(
+        context,
+        update.effective_chat.id,
+        uid,
+        with_menu=True,
+        reply_to_message_id=reply_to,
     )
     context.user_data["at_root"] = True
 
@@ -475,13 +525,12 @@ async def cmd_testguestdigest(update: Update, context: ContextTypes.DEFAULT_TYPE
         schedule_message_autodelete(msg, context)
         return msg
 
-    text = build_guest_digest_text()
     # отправим как в «бою» — именно гостю
     try:
-        await context.bot.send_message(
+        await send_guest_digest_message(
+            context,
             chat_id=GUEST_USER_ID,
-            text=text,
-            reply_markup=build_main_menu(GUEST_USER_ID),
+            user_id_for_menu=GUEST_USER_ID,
         )
     except Exception as e:
         msg = await update.message.reply_text(f"Не удалось отправить гостевой дайджест: {e}")
@@ -500,24 +549,23 @@ async def cmd_testguestdigesttome(update: Update, context: ContextTypes.DEFAULT_
         schedule_message_autodelete(msg, context)
         return msg
 
-    # Собираем ровно тот же текст, что и для гостя
-    text = build_guest_digest_text()
-    if not text.strip():
-        msg = await update.message.reply_text("Гостевой дайджест пуст (проверьте имена календаря и списка задач).")
-        schedule_message_autodelete(msg, context)
-        return msg
-
     # Отправляем админу (инициатору команды)
     try:
-        await context.bot.send_message(
+        sent, _ = await send_guest_digest_message(
+            context,
             chat_id=uid,
-            text=text,
-            reply_markup=build_main_menu(uid),
+            user_id_for_menu=uid,
+            skip_if_blank=True,
         )
     except Exception as e:
         msg = await update.message.reply_text(f"Не удалось отправить дайджест: {e}")
         schedule_message_autodelete(msg, context)
         return
+
+    if not sent:
+        msg = await update.message.reply_text("Гостевой дайджест пуст (проверьте имена календаря и списка задач).")
+        schedule_message_autodelete(msg, context)
+        return msg
 
     context.user_data["at_root"] = True
     msg = await update.message.reply_text("Гостевой дайджест отправлен вам.")
@@ -602,18 +650,19 @@ async def cmd_start_and_schedule(update: Update, context: ContextTypes.DEFAULT_T
     storage.set_chat_id(cid)
     uid = update.effective_user.id if update.effective_user else None
 
-    digest_text = build_digest_text()
-    context.bot_data["last_digest_text"] = digest_text
-    storage.set_last_digest(digest_text)
     try:
         register_daily_job(context, cid)
     except RuntimeError:
         await asyncio.sleep(0.5)
         register_daily_job(context, cid)
 
-    await update.message.reply_text(
-        digest_text,
-        reply_markup=build_main_menu(uid),
+    reply_to = update.message.message_id if update.message else None
+    await rebuild_and_show_digest(
+        context,
+        cid,
+        uid,
+        with_menu=True,
+        reply_to_message_id=reply_to,
     )
     context.user_data["at_root"] = True
 
@@ -1037,9 +1086,15 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Обновление дайджеста
     if data == "refresh_digest":
         await query.answer("Обновляю...")
-        digest_text = build_digest_text()
-        context.bot_data["last_digest_text"] = digest_text
-        await safe_edit(query, digest_text, build_main_menu(query.from_user.id))
+        chat_id = query.message.chat_id if query.message else query.from_user.id
+        loading_msg = await show_loading_message(context, chat_id)
+        try:
+            digest_text = build_digest_text()
+            context.bot_data["last_digest_text"] = digest_text
+            storage.set_last_digest(digest_text)
+            await safe_edit(query, digest_text, build_main_menu(query.from_user.id))
+        finally:
+            await hide_loading_message(context, loading_msg)
         context.user_data["at_root"] = True
         return
     
