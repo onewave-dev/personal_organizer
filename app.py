@@ -81,6 +81,40 @@ async def guard_auth_and_get_uid(update: Update, context: ContextTypes.DEFAULT_T
     return None
 
 
+# --- ВСПОМОГАТЕЛЬНЫЕ УТИЛИТЫ ДЛЯ СООБЩЕНИЙ ---
+
+async def _delete_message_job(context: ContextTypes.DEFAULT_TYPE):
+    job = context.job
+    if not job:
+        return
+    data = job.data or {}
+    chat_id = data.get("chat_id")
+    message_id = data.get("message_id")
+    if not chat_id or not message_id:
+        return
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except BadRequest:
+        # сообщение могли удалить вручную или оно уже исчезло
+        pass
+    except Exception:
+        # глушим остальные ошибки, чтобы не мешать работе бота
+        pass
+
+
+def schedule_message_autodelete(message, context: ContextTypes.DEFAULT_TYPE, delay_seconds: float = 4.0) -> None:
+    if message is None:
+        return
+    jq = context.job_queue
+    if jq is None:
+        return
+    jq.run_once(
+        _delete_message_job,
+        delay_seconds,
+        data={"chat_id": message.chat_id, "message_id": message.message_id},
+    )
+
+
 # --- КЛАВИАТУРЫ ---
 
 def build_main_menu(user_id: int | None) -> InlineKeyboardMarkup:
@@ -432,10 +466,14 @@ async def cmd_testguestdigest(update: Update, context: ContextTypes.DEFAULT_TYPE
     if uid is None:
         return
     if not is_admin(uid):
-        return await update.message.reply_text("Недостаточно прав.")
+        msg = await update.message.reply_text("Недостаточно прав.")
+        schedule_message_autodelete(msg, context)
+        return msg
 
     if not GUEST_USER_ID:
-        return await update.message.reply_text("GUEST_USER_ID не задан.")
+        msg = await update.message.reply_text("GUEST_USER_ID не задан.")
+        schedule_message_autodelete(msg, context)
+        return msg
 
     text = build_guest_digest_text()
     # отправим как в «бою» — именно гостю
@@ -446,22 +484,28 @@ async def cmd_testguestdigest(update: Update, context: ContextTypes.DEFAULT_TYPE
             reply_markup=build_main_menu(GUEST_USER_ID),
         )
     except Exception as e:
-        await update.message.reply_text(f"Не удалось отправить гостевой дайджест: {e}")
+        msg = await update.message.reply_text(f"Не удалось отправить гостевой дайджест: {e}")
+        schedule_message_autodelete(msg, context)
         return
 
-    await update.message.reply_text("Гостевой дайджест отправлен.")
+    msg = await update.message.reply_text("Гостевой дайджест отправлен.")
+    schedule_message_autodelete(msg, context)
 
 async def cmd_testguestdigesttome(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = await guard_auth_and_get_uid(update, context)
     if uid is None:
         return
     if not is_admin(uid):
-        return await update.message.reply_text("Недостаточно прав.")
+        msg = await update.message.reply_text("Недостаточно прав.")
+        schedule_message_autodelete(msg, context)
+        return msg
 
     # Собираем ровно тот же текст, что и для гостя
     text = build_guest_digest_text()
     if not text.strip():
-        return await update.message.reply_text("Гостевой дайджест пуст (проверьте имена календаря и списка задач).")
+        msg = await update.message.reply_text("Гостевой дайджест пуст (проверьте имена календаря и списка задач).")
+        schedule_message_autodelete(msg, context)
+        return msg
 
     # Отправляем админу (инициатору команды)
     try:
@@ -471,11 +515,13 @@ async def cmd_testguestdigesttome(update: Update, context: ContextTypes.DEFAULT_
             reply_markup=build_main_menu(uid),
         )
     except Exception as e:
-        await update.message.reply_text(f"Не удалось отправить дайджест: {e}")
+        msg = await update.message.reply_text(f"Не удалось отправить дайджест: {e}")
+        schedule_message_autodelete(msg, context)
         return
 
     context.user_data["at_root"] = True
-    await update.message.reply_text("Гостевой дайджест отправлен вам.")
+    msg = await update.message.reply_text("Гостевой дайджест отправлен вам.")
+    schedule_message_autodelete(msg, context)
 
 # 5.1) Команда для установки времени дайджеста
 async def cmd_settime(update: Update, context: ContextTypes.DEFAULT_TYPE):
